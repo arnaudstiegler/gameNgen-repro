@@ -1,2 +1,6 @@
 ipdb
+loguru
+opencv-python
+numpy==1.26.4
+stable-baselines3
 vizdoom
