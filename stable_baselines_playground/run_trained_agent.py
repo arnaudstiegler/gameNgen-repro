@@ -63,7 +63,7 @@ frame_buffer = deque(maxlen=BUFFER_SIZE)
 action_buffer = deque(maxlen=BUFFER_SIZE)
 
 entries = []
-for i in range(EPISODE_LENGTH + 1):
+for i in range(EPISODE_LENGTH + BUFFER_SIZE):
     # Either use the model to predict the action or sample a random action
     # action, _state = model.predict(obs, deterministic=True)
 
@@ -73,8 +73,8 @@ for i in range(EPISODE_LENGTH + 1):
     obs, reward, done, info = vec_env.step(action)
     frame_buffer.append(obs)
 
-    if i == 0:
-        # First iteration should not be stored since we have no current state before the action
+    if i < BUFFER_SIZE:
+        # So that we don't have to worry about padding for now
         continue
 
     actions = list(action_buffer)

@@ -518,6 +518,7 @@ def main():
     action_dim = max([elem for list in dataset['train']['actions'] for elem in list])
     # This will be used to encode the actions
     action_embedding = torch.nn.Embedding(num_embeddings=action_dim, embedding_dim=768)
+    action_proj = torch.nn.Linear(10, 1)
     
     # Load scheduler, tokenizer and models.
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
@@ -533,6 +534,22 @@ def main():
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
     )
+
+    '''
+    This is to accomodate concatenating previous frames in the channels dimension
+    '''
+    old_conv_in = unet.conv_in
+    new_conv_in = torch.nn.Conv2d(40, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+
+    # Initialize the new conv layer with the weights from the old one
+    with torch.no_grad():
+        new_conv_in.weight[:, :4, :, :] = old_conv_in.weight
+        new_conv_in.weight[:, 4:, :, :] = 0  # Initialize new channels to 0
+        new_conv_in.bias = old_conv_in.bias
+
+    # Replace the conv_in layer
+    unet.conv_in = new_conv_in
+
     # TODO: unfreeze
     unet.requires_grad_(False)
     vae.requires_grad_(False)
@@ -552,20 +569,22 @@ def main():
     for param in unet.parameters():
         param.requires_grad_(False)
     #TODO: remove
-    unet_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank,
-        init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
+    # unet_lora_config = LoraConfig(
+    #     r=args.rank,
+    #     lora_alpha=args.rank,
+    #     init_lora_weights="gaussian",
+    #     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    # )
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
+    action_embedding.to(accelerator.device, dtype=weight_dtype)
+    action_proj.to(accelerator.device, dtype=weight_dtype)
     # text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # Add adapter and make sure the trainable params are in float32.
-    unet.add_adapter(unet_lora_config)
+    # unet.add_adapter(unet_lora_config)
     if args.mixed_precision == "fp16":
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(unet, dtype=torch.float32)
@@ -583,7 +602,7 @@ def main():
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
 
-    lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
+    # lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -612,7 +631,7 @@ def main():
         optimizer_cls = torch.optim.AdamW
 
     optimizer = optimizer_cls(
-        lora_layers,
+        unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -717,7 +736,7 @@ def main():
         # Stack all examples
         # images has shape: (batch_size, frame_buffer, 3, height, width)
         images = torch.stack(processed_images)
-        return {"images": images}
+        return {"images": images, "actions": torch.tensor([example['actions'] for example in examples])}
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -823,8 +842,11 @@ def main():
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
+                # Embed the actions first
+                action_hidden_states = action_embedding(batch['actions'])
+                # action_hidden_states = action_proj(out.permute(0,2,1)).squeeze(-1)
+
                 # Convert images to latent space
-                import ipdb; ipdb.set_trace()
                 bs, buffer_len, channels, height, width = batch["images"].shape
 
                 # Ugly for now:
@@ -858,7 +880,6 @@ def main():
 
                 # Here we basically concatenate previous frames to the last noisy frame
                 concatenated_latents = torch.concat(aggregator, dim=1)
-                import ipdb; ipdb.set_trace()
                 # Get the text embedding for conditioning
                 # encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
@@ -875,7 +896,7 @@ def main():
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # Predict the noise residual and compute loss
-                model_pred = unet(concatenated_latents, timesteps, encoder_hidden_states=None, return_dict=False)[0]
+                model_pred = unet(concatenated_latents, timesteps, encoder_hidden_states=action_hidden_states, return_dict=False)[0]
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
@@ -903,7 +924,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = lora_layers
+                    params_to_clip = unet.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -942,15 +963,15 @@ def main():
                         accelerator.save_state(save_path)
 
                         unwrapped_unet = unwrap_model(unet)
-                        unet_lora_state_dict = convert_state_dict_to_diffusers(
-                            get_peft_model_state_dict(unwrapped_unet)
-                        )
+                        # unet_lora_state_dict = convert_state_dict_to_diffusers(
+                        #     get_peft_model_state_dict(unwrapped_unet)
+                        # )
 
-                        StableDiffusionPipeline.save_lora_weights(
-                            save_directory=save_path,
-                            unet_lora_layers=unet_lora_state_dict,
-                            safe_serialization=True,
-                        )
+                        # StableDiffusionPipeline.save_lora_weights(
+                        #     save_directory=save_path,
+                        #     unet_lora_layers=unet_lora_state_dict,
+                        #     safe_serialization=True,
+                        # )
 
                         logger.info(f"Saved state to {save_path}")
 
@@ -981,12 +1002,12 @@ def main():
         unet = unet.to(torch.float32)
 
         unwrapped_unet = unwrap_model(unet)
-        unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
-        StableDiffusionPipeline.save_lora_weights(
-            save_directory=args.output_dir,
-            unet_lora_layers=unet_lora_state_dict,
-            safe_serialization=True,
-        )
+        # unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+        # StableDiffusionPipeline.save_lora_weights(
+        #     save_directory=args.output_dir,
+        #     unet_lora_layers=unet_lora_state_dict,
+        #     safe_serialization=True,
+        # )
 
         # Final inference
         # Load previous pipeline
