@@ -265,7 +265,7 @@ def parse_args():
         help="whether to randomly flip images horizontally",
     )
     parser.add_argument(
-        "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
+        "--train_batch_size", type=int, default=2, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
@@ -677,10 +677,15 @@ def main():
         return model
 
     def preprocess_train(examples):
-        images = [image.convert("RGB") for images in examples['images'] for image in images]
-        # TODO: change keys here
-        tensor_images = [train_transforms(image) for image in images]
-        import ipdb; ipdb.set_trace()
+        transform = transforms.ToTensor()
+        # TODO: might need some changes here
+        images = []
+        for image_list in examples['images']:
+            current_images = []
+            for image in image_list:
+                current_images.append(transform(image.convert('RGB')))
+            images.append(current_images)
+        examples['images'] = images
         return examples
 
     with accelerator.main_process_first():
@@ -690,13 +695,29 @@ def main():
         train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
-        # TODO: should we aggregate images here?
-        import ipdb; ipdb.set_trace()
-        images = torch.stack([example["images"] for example in examples])
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids}
+        # Function to create a black screen tensor
+        def create_black_screen(height, width):
+            return torch.zeros(3, height, width, dtype=torch.float32)
+
+        # Assume all images have the same dimensions
+        sample_image = examples[0]['images'][0]
+        height, width = sample_image.shape[1], sample_image.shape[2]
+
+        # Process each example
+        processed_images = []
+        for example in examples:
+            # Pad or truncate to 10 images
+            padded_images = example['images'][:10]
+            while len(padded_images) < 10:
+                padded_images.append(create_black_screen(height, width))
+            
+            # Stack the 10 images for this example
+            processed_images.append(torch.stack(padded_images))
+
+        # Stack all examples
+        # images has shape: (batch_size, frame_buffer, 3, height, width)
+        images = torch.stack(processed_images)
+        return {"images": images}
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -803,8 +824,12 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                import ipdb; ipdb.set_trace()
+                bs, buffer_len, channels, height, width = batch["images"].shape
+                latents = vae.encode(batch["images"].to(dtype=weight_dtype).view(-1, channels, height, width)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
+
+                latents = latents.view(bs, buffer_len, channels, height, width)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -821,6 +846,7 @@ def main():
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
+                # TODO: this noise should prob. only be added to the last frame?
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # Get the text embedding for conditioning
