@@ -566,8 +566,8 @@ def main():
         weight_dtype = torch.bfloat16
 
     # Freeze the unet parameters before adding adapters
-    for param in unet.parameters():
-        param.requires_grad_(False)
+    # for param in unet.parameters():
+    #     param.requires_grad_(False)
     #TODO: remove
     # unet_lora_config = LoraConfig(
     #     r=args.rank,
@@ -836,6 +836,8 @@ def main():
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
+
+    import ipdb; ipdb.set_trace()
 
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
