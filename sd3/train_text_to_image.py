@@ -524,9 +524,9 @@ def main():
     tokenizer = CLIPTokenizer.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
     )
-    text_encoder = CLIPTextModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
-    )
+    # text_encoder = CLIPTextModel.from_pretrained(
+    #     args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
+    # )
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
     )
@@ -536,7 +536,7 @@ def main():
     # TODO: unfreeze
     unet.requires_grad_(False)
     vae.requires_grad_(False)
-    text_encoder.requires_grad_(False)
+    # text_encoder.requires_grad_(False)
 
     # TODO: add actions embeddings
 
@@ -562,7 +562,7 @@ def main():
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
+    # text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # Add adapter and make sure the trainable params are in float32.
     unet.add_adapter(unet_lora_config)
@@ -826,31 +826,39 @@ def main():
                 # Convert images to latent space
                 import ipdb; ipdb.set_trace()
                 bs, buffer_len, channels, height, width = batch["images"].shape
-                latents = vae.encode(batch["images"].to(dtype=weight_dtype).view(-1, channels, height, width)).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
 
-                latents = latents.view(bs, buffer_len, channels, height, width)
+                # Ugly for now:
+                aggregator = []
+                for i in range(buffer_len):
+                    latents = vae.encode(batch["images"].to(dtype=weight_dtype).view(-1, channels, height, width)).latent_dist.sample()
+                    latents = latents * vae.config.scaling_factor
 
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
-                if args.noise_offset:
-                    # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                    noise += args.noise_offset * torch.randn(
-                        (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
-                    )
+                    latents = latents.view(bs, buffer_len, vae.config.latent_channels, height, width)
+                    if i == buffer_len - 1:
+                        # Sample noise that we'll add to the latents
+                        noise = torch.randn_like(latents)
+                        if args.noise_offset:
+                            # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                            noise += args.noise_offset * torch.randn(
+                                (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
+                            )
 
-                bsz = latents.shape[0]
-                # Sample a random timestep for each image
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-                timesteps = timesteps.long()
+                        bsz = latents.shape[0]
+                        # Sample a random timestep for each image
+                        timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+                        timesteps = timesteps.long()
 
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                # TODO: this noise should prob. only be added to the last frame?
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                        # Add noise to the latents according to the noise magnitude at each timestep
+                        # (this is the forward diffusion process)
+                        # TODO: this noise should prob. only be added to the last frame?
+                        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
+                        aggregator.append(noisy_latents)
+                    else:
+                        aggregator.append(latents)
+                import ipdb; ipdb.set_trace()
                 # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
+                # encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
@@ -865,7 +873,7 @@ def main():
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # Predict the noise residual and compute loss
-                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
+                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=None, return_dict=False)[0]
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
