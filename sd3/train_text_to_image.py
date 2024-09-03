@@ -550,8 +550,8 @@ def main():
     # Replace the conv_in layer
     unet.conv_in = new_conv_in
 
+    unet.requires_grad_(True)
     # TODO: unfreeze
-    unet.requires_grad_(False)
     vae.requires_grad_(False)
     # text_encoder.requires_grad_(False)
 
