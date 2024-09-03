@@ -517,7 +517,7 @@ def main():
     # Max number of actions in the action space
     action_dim = max([elem for list in dataset['train']['actions'] for elem in list])
     # This will be used to encode the actions
-    action_embedding = torch.nn.Embedding(num_embeddings=action_dim, embedding_dim=768)
+    action_embedding = torch.nn.Embedding(num_embeddings=action_dim+1, embedding_dim=768)
     action_proj = torch.nn.Linear(10, 1)
     
     # Load scheduler, tokenizer and models.
@@ -736,7 +736,7 @@ def main():
         # Stack all examples
         # images has shape: (batch_size, frame_buffer, 3, height, width)
         images = torch.stack(processed_images)
-        import ipdb; ipdb.set_trace()
+        images = images.to(memory_format=torch.contiguous_format).float()
         return {"images": images, "actions": torch.tensor([example['actions'] for example in examples])}
 
     # DataLoaders creation:
