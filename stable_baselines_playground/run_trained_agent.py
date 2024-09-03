@@ -4,22 +4,20 @@ from stable_baselines3 import PPO
 import gymnasium
 from vizdoom import gymnasium_wrapper
 import numpy as np
-from queue import Queue
+from collections import deque
 from PIL import Image as pil_image
 import io
 from datasets import Dataset, Features, Image, Value, Sequence
-from tqdm import tqdm
 
-
-'''
+"""
 For DefendTheLine scenario:
 0. No action (no-op)
 1. Move right
 2. Move left
 3. Shoot
-'''
+"""
 
-
+BUFFER_SIZE = 10
 EPISODE_LENGTH = 100
 
 
@@ -39,7 +37,7 @@ def generate_hf_parquet_dataset(entries: Dict[str, Any]):
     return dataset
 
 
-logger.info("Start predict")
+logger.info("Start generating episodes")
 
 vizdoom_scenarios = [
     "VizdoomHealthGatheringSupreme-v0",
@@ -52,14 +50,7 @@ vizdoom_scenarios = [
 ]
 
 
-def image_to_bytes(image_path):
-    with Image.open(image_path) as img:
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format="PNG")
-        return img_byte_arr.getvalue()
-
-
-#TODO: there is a frame_skip option here
+# TODO: there is a frame_skip option here
 env = gymnasium.make("VizdoomCorridor-v0", render_mode="rgb_array")
 env.get_wrapper_attr("game").set_render_hud(True)
 
@@ -68,24 +59,26 @@ vec_env = model.get_env()
 obs = vec_env.reset()
 
 
-frame_buffer = Queue(maxsize=EPISODE_LENGTH)
-action_buffer = Queue(maxsize=EPISODE_LENGTH)
+frame_buffer = deque(maxlen=BUFFER_SIZE)
+action_buffer = deque(maxlen=BUFFER_SIZE)
 
 entries = []
-for i in tqdm(range(EPISODE_LENGTH)):
+for i in range(EPISODE_LENGTH + 1):
     # Either use the model to predict the action or sample a random action
     # action, _state = model.predict(obs, deterministic=True)
 
     action = [env.action_space.sample()]
     # The action is a list of actions, but the buffer is a queue of actions
-    action_buffer.put(action[0])
+    action_buffer.append(action[0])
     obs, reward, done, info = vec_env.step(action)
-    frame_buffer.put(obs)
+    frame_buffer.append(obs)
 
-    # print(reward)
+    if i == 0:
+        # First iteration should not be stored since we have no current state before the action
+        continue
 
-    actions = list(action_buffer.queue)[::-1]
-    frames = list(frame_buffer.queue)[::-1]
+    actions = list(action_buffer)
+    frames = list(frame_buffer)
     game_variables = []
     images = []
     # Dump frames locally with a unique id
@@ -97,7 +90,6 @@ for i in tqdm(range(EPISODE_LENGTH)):
             pil_image.fromarray(np.transpose(frame["screen"].squeeze(0), (1, 2, 0)))
         )
 
-    # Dump both buffers to a single file
     entries.append(
         {
             "sample_id": i,
@@ -107,11 +99,6 @@ for i in tqdm(range(EPISODE_LENGTH)):
         }
     )
 
-    # base_env = vec_env.envs[0].unwrapped
-    # base_env.render()
-    # import time
-    # time.sleep(0.05)
-
-
+logger.info("Creating the HF dataset")
 dataset = generate_hf_parquet_dataset(entries)
 dataset.push_to_hub("arnaudstiegler/gameNgen_test_dataset")
