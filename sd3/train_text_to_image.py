@@ -110,8 +110,7 @@ def log_validation(
     is_final_validation=False,
 ):
     logger.info(
-        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-        f" {args.validation_prompt}."
+        f"Running validation... \n Generating {args.num_validation_images} images"
     )
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
@@ -137,7 +136,7 @@ def log_validation(
             tracker.log(
                 {
                     phase_name: [
-                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}") for i, image in enumerate(images)
+                        wandb.Image(image, caption=f"{i}") for i, image in enumerate(images)
                     ]
                 }
             )
@@ -984,7 +983,7 @@ def main():
                 break
 
         if accelerator.is_main_process:
-            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
+            if epoch % args.validation_epochs == 0:
                 # create pipeline
                 pipeline = DiffusionPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
@@ -1013,7 +1012,7 @@ def main():
 
         # Final inference
         # Load previous pipeline
-        if args.validation_prompt is not None:
+        if True:
             pipeline = DiffusionPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 revision=args.revision,
@@ -1022,7 +1021,7 @@ def main():
             )
 
             # load attention processors
-            pipeline.load_lora_weights(args.output_dir)
+            # pipeline.load_lora_weights(args.output_dir)
 
             # run inference
             images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
