@@ -736,6 +736,7 @@ def main():
         # Stack all examples
         # images has shape: (batch_size, frame_buffer, 3, height, width)
         images = torch.stack(processed_images)
+        import ipdb; ipdb.set_trace()
         return {"images": images, "actions": torch.tensor([example['actions'] for example in examples])}
 
     # DataLoaders creation:
@@ -846,7 +847,6 @@ def main():
             with accelerator.accumulate(unet):
                 # Embed the actions first
                 action_hidden_states = action_embedding(batch['actions'])
-                # action_hidden_states = action_proj(out.permute(0,2,1)).squeeze(-1)
 
                 # Convert images to latent space
                 bs, buffer_len, channels, height, width = batch["images"].shape
