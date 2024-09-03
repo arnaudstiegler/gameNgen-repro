@@ -6,7 +6,7 @@ from loguru import logger
 
 from vizdoom import gymnasium_wrapper  # noqa
 
-env = gymnasium.make("VizdoomDefendLine-v0", render_mode="rgb_array")
+env = gymnasium.make("VizdoomCorridor-v0", render_mode="rgb_array")
 
 logger.info('Start training')
 model = PPO("MultiInputPolicy", env, verbose=1)

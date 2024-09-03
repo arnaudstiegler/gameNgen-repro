@@ -6,4 +6,11 @@ opencv-python
 numpy==1.26.4
 stable-baselines3
 vizdoom
+transformers
+accelerate
 diffusers
+datasets
+peft
+wandb
+pydantic
+ruff

@@ -163,3 +163,5 @@ cython_debug/
 
 _vizdoom.ini
 trained_agents/
+data/
+test_dataset/data/
