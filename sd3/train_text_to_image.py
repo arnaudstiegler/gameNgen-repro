@@ -830,10 +830,9 @@ def main():
                 # Ugly for now:
                 aggregator = []
                 for i in range(buffer_len):
-                    latents = vae.encode(batch["images"].to(dtype=weight_dtype).view(-1, channels, height, width)).latent_dist.sample()
+                    latents = vae.encode(batch["images"][:, i, :].to(dtype=weight_dtype)).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
 
-                    latents = latents.view(bs, buffer_len, vae.config.latent_channels, height, width)
                     if i == buffer_len - 1:
                         # Sample noise that we'll add to the latents
                         noise = torch.randn_like(latents)
