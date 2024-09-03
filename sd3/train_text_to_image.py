@@ -855,6 +855,9 @@ def main():
                         aggregator.append(noisy_latents)
                     else:
                         aggregator.append(latents)
+
+                # Here we basically concatenate previous frames to the last noisy frame
+                concatenated_latents = torch.concat(aggregator, dim=1)
                 import ipdb; ipdb.set_trace()
                 # Get the text embedding for conditioning
                 # encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
@@ -872,7 +875,7 @@ def main():
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # Predict the noise residual and compute loss
-                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=None, return_dict=False)[0]
+                model_pred = unet(concatenated_latents, timesteps, encoder_hidden_states=None, return_dict=False)[0]
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
