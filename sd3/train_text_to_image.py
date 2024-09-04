@@ -41,15 +41,18 @@ from peft.utils import get_peft_model_state_dict
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
+from safetensors.torch import save_file
 
 import diffusers
-from diffusers import AutoencoderKL, DDPMScheduler, DiffusionPipeline, StableDiffusionPipeline, UNet2DConditionModel
+from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, DiffusionPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, is_wandb_available
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
+
+from config_sd import BUFFER_SIZE, REPO_NAME
 
 
 if is_wandb_available():
@@ -109,6 +112,9 @@ def log_validation(
     epoch,
     is_final_validation=False,
 ):
+    '''
+    Here, we wanna validate different actions based on the same sample (doesn't really matter for now testing different samples)
+    '''
     logger.info(
         f"Running validation... \n Generating {args.num_validation_images} images"
     )
@@ -230,7 +236,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="sd-model-finetuned-lora",
+        default="sd-model-finetuned",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -485,7 +491,7 @@ def main():
 
         if args.push_to_hub:
             repo_id = create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
+                repo_id=REPO_NAME, exist_ok=True, token=args.hub_token
             ).repo_id
 
         # Get the datasets: you can either provide your own training and evaluation files (see below)
@@ -517,13 +523,13 @@ def main():
     action_dim = max([elem for list in dataset['train']['actions'] for elem in list])
     # This will be used to encode the actions
     action_embedding = torch.nn.Embedding(num_embeddings=action_dim+1, embedding_dim=768)
-    action_proj = torch.nn.Linear(10, 1)
     
     # Load scheduler, tokenizer and models.
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    tokenizer = CLIPTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
-    )
+    noise_scheduler = DDIMScheduler()
+    # tokenizer = CLIPTokenizer.from_pretrained(
+    #     args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
+    # )
     # text_encoder = CLIPTextModel.from_pretrained(
     #     args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
     # )
@@ -548,8 +554,10 @@ def main():
 
     # Replace the conv_in layer
     unet.conv_in = new_conv_in
+    unet.config['in_channels'] = 4 * BUFFER_SIZE
 
-    unet.requires_grad_(True)
+    # TODO: unfreeze
+    unet.requires_grad_(False)
     # TODO: unfreeze
     vae.requires_grad_(False)
     # text_encoder.requires_grad_(False)
@@ -579,7 +587,6 @@ def main():
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     action_embedding.to(accelerator.device, dtype=weight_dtype)
-    action_proj.to(accelerator.device, dtype=weight_dtype)
     # text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # Add adapter and make sure the trainable params are in float32.
@@ -837,8 +844,6 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    import ipdb; ipdb.set_trace()
-
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
@@ -961,9 +966,10 @@ def main():
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # TODO: might wanna bring back
+                        # accelerator.save_state(save_path)
 
-                        unwrapped_unet = unwrap_model(unet)
+                        # unwrapped_unet = unwrap_model(unet)
                         # unet_lora_state_dict = convert_state_dict_to_diffusers(
                         #     get_peft_model_state_dict(unwrapped_unet)
                         # )
@@ -981,28 +987,29 @@ def main():
 
             if global_step >= args.max_train_steps:
                 break
+        
+        # TODO: uncomment
+        # if accelerator.is_main_process:
+        #     if epoch % args.validation_epochs == 0:
+        #         # create pipeline
+        #         pipeline = DiffusionPipeline.from_pretrained(
+        #             args.pretrained_model_name_or_path,
+        #             unet=unwrap_model(unet),
+        #             revision=args.revision,
+        #             variant=args.variant,
+        #             torch_dtype=weight_dtype,
+        #         )
+        #         images = log_validation(pipeline, args, accelerator, epoch)
 
-        if accelerator.is_main_process:
-            if epoch % args.validation_epochs == 0:
-                # create pipeline
-                pipeline = DiffusionPipeline.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    unet=unwrap_model(unet),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-                images = log_validation(pipeline, args, accelerator, epoch)
-
-                del pipeline
-                torch.cuda.empty_cache()
-
-    # Save the lora layers
+        #         del pipeline
+        #         torch.cuda.empty_cache()
+    
+    # Save the model
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         unet = unet.to(torch.float32)
 
-        unwrapped_unet = unwrap_model(unet)
+        # unwrapped_unet = unwrap_model(unet)
         # unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
         # StableDiffusionPipeline.save_lora_weights(
         #     save_directory=args.output_dir,
@@ -1011,25 +1018,30 @@ def main():
         # )
 
         # Final inference
-        # Load previous pipeline
-        if True:
-            pipeline = DiffusionPipeline.from_pretrained(
-                args.pretrained_model_name_or_path,
-                revision=args.revision,
-                variant=args.variant,
-                torch_dtype=weight_dtype,
-            )
+        # TODO: uncomment once validation works
+        # if True:
+        #     pipeline = DiffusionPipeline.from_pretrained(
+        #         args.pretrained_model_name_or_path,
+        #         revision=args.revision,
+        #         variant=args.variant,
+        #         torch_dtype=weight_dtype,
+        #     )
 
-            # load attention processors
-            # pipeline.load_lora_weights(args.output_dir)
+        #     # load attention processors
+        #     # pipeline.load_lora_weights(args.output_dir)
 
-            # run inference
-            images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
+        #     # run inference
+        #     images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
 
         if args.push_to_hub:
+            unet.save_pretrained(os.path.join(args.output_dir, "unet"))
+            vae.save_pretrained(os.path.join(args.output_dir, "vae"))
+            save_file(action_embedding.state_dict(), os.path.join(args.output_dir, "action_embedding_model.safetensors"))
+            noise_scheduler.save_pretrained(os.path.join(args.output_dir, "noise_scheduler"))
             save_model_card(
                 repo_id,
-                images=images,
+                # images=images,
+                images=[],
                 base_model=args.pretrained_model_name_or_path,
                 dataset_name=args.dataset_name,
                 repo_folder=args.output_dir,

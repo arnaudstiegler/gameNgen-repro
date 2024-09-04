@@ -8,6 +8,7 @@ from collections import deque
 from PIL import Image as pil_image
 import io
 from datasets import Dataset, Features, Image, Value, Sequence
+from config_sd import BUFFER_SIZE
 
 """
 For DefendTheLine scenario:
@@ -17,7 +18,6 @@ For DefendTheLine scenario:
 3. Shoot
 """
 
-BUFFER_SIZE = 10
 EPISODE_LENGTH = 100
 
 

@@ -14,3 +14,5 @@ peft
 wandb
 pydantic
 ruff
+safetensors
+ipywidgets
