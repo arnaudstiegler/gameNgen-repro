@@ -1,71 +1,124 @@
-from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel, DDPMScheduler
+from diffusers import (
+    AutoencoderKL,
+    DDIMScheduler,
+    UNet2DConditionModel,
+    DDPMScheduler,
+    StableDiffusionPipeline,
+)
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPImageProcessor
 import torch
 from typing import List
 from diffusers.utils.torch_utils import randn_tensor
 from tqdm import tqdm
 from diffusers.image_processor import VaeImageProcessor
+import numpy as np
+import random
 
+torch.manual_seed(9052924)
+np.random.seed(9052924)
+random.seed(9052924)
 
-repo_name = 'CompVis/stable-diffusion-v1-4'
-
-unet = UNet2DConditionModel.from_pretrained(repo_name, subfolder='unet')
-vae = AutoencoderKL.from_pretrained(repo_name, subfolder='vae')
-noise_scheduler = DDPMScheduler.from_pretrained(repo_name, subfolder="scheduler")
-# noise_scheduler = DDIMScheduler()
-tokenizer = CLIPTokenizer.from_pretrained(
-    repo_name, subfolder="tokenizer"
+repo_name = "CompVis/stable-diffusion-v1-4"
+device = torch.device(
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps"
+    if torch.backends.mps.is_available()
+    else "cpu"
 )
-text_encoder = CLIPTextModel.from_pretrained(
-    repo_name, subfolder="text_encoder"
+
+unet = (
+    UNet2DConditionModel.from_pretrained(repo_name, subfolder="unet").eval().to(device)
+)
+vae = AutoencoderKL.from_pretrained(repo_name, subfolder="vae").eval().to(device)
+noise_scheduler = DDPMScheduler.from_pretrained(repo_name, subfolder="scheduler")
+tokenizer = CLIPTokenizer.from_pretrained(repo_name, subfolder="tokenizer")
+text_encoder = (
+    CLIPTextModel.from_pretrained(repo_name, subfolder="text_encoder").eval().to(device)
 )
 
 
 # Defining all config-related variables here
-prompt = ['Spiderman riding a horse']
+prompt = ["Spiderman riding a horse"]
 batch_size = len(prompt)
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 num_images_per_prompt = 1
 do_classifier_free_guidance = True
 negative_prompt = None
 num_inference_steps = 50
 generator = torch.Generator(device=device)
-dtype = torch.float32
+dtype = next(unet.parameters()).dtype
 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 height = unet.config.sample_size * vae_scale_factor
 width = unet.config.sample_size * vae_scale_factor
-guidance_scale = 1
+guidance_scale = 7.5
 
 image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
 
 
-def encode_prompt(prompts: List[str], negative_prompt: List[str], batch_size: int, device: str, do_classifier_free_guidance: bool):
-    assert isinstance(prompts, list), f'Expected list but received: {type(prompts)}'
+def encode_prompt(
+    prompts: List[str],
+    negative_prompt: List[str],
+    batch_size: int,
+    device: str,
+    do_classifier_free_guidance: bool,
+):
+    assert isinstance(prompts, list), f"Expected list but received: {type(prompts)}"
     text_inputs = tokenizer(
-                prompts,
-                padding="max_length",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-    prompt_embeds = text_encoder(text_inputs.input_ids.to(device), attention_mask=text_inputs.attention_mask.to(device))
+        prompts,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+    # NB: the diffusers pipeline is seemingly not using attention_masks for the text encoder
+    prompt_embeds = text_encoder(text_inputs.input_ids.to(device))
     prompt_embeds = prompt_embeds[0]
+
+    bs_embed, seq_len, _ = prompt_embeds.shape
+    # duplicate text embeddings for each generation per prompt, using mps friendly method
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
+    prompt_embeds_dtype = prompt_embeds.dtype
 
     if do_classifier_free_guidance:
         uncond_tokens = [""] * batch_size if not negative_prompt else negative_prompt
         uncond_input = tokenizer(
-                uncond_tokens,
-                padding="max_length",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-        negative_prompt_embeds = text_encoder(uncond_input.input_ids.to(device), attention_mask = uncond_input.input_ids.to(device))
+            uncond_tokens,
+            padding="max_length",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        negative_prompt_embeds = text_encoder(uncond_input.input_ids.to(device))
         negative_prompt_embeds = negative_prompt_embeds[0]
+
+        seq_len = negative_prompt_embeds.shape[1]
+
+        negative_prompt_embeds = negative_prompt_embeds.to(
+            dtype=prompt_embeds_dtype, device=device
+        )
+
+        negative_prompt_embeds = negative_prompt_embeds.repeat(
+            1, num_images_per_prompt, 1
+        )
+        negative_prompt_embeds = negative_prompt_embeds.view(
+            batch_size * num_images_per_prompt, seq_len, -1
+        )
+
+    else:
+        negative_prompt_embeds = None
 
     return prompt_embeds, negative_prompt_embeds
 
-def get_latents(generator: torch.Generator, batch_size: int, height: int, width: int, dtype = torch.float32):
+
+def get_latents(
+    generator: torch.Generator,
+    batch_size: int,
+    height: int,
+    width: int,
+    dtype=torch.float32,
+):
     shape = (
         batch_size,
         num_channels_latents,
@@ -78,11 +131,12 @@ def get_latents(generator: torch.Generator, batch_size: int, height: int, width:
             f" size of {batch_size}. Make sure the batch size matches the length of the generators."
         )
 
-    latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+    latents = randn_tensor(shape, generator=None, device=device, dtype=dtype)
 
     # scale the initial noise by the standard deviation required by the scheduler
     latents = latents * noise_scheduler.init_noise_sigma
     return latents
+
 
 with torch.no_grad():
     prompt_embeds, negative_prompt_embeds = encode_prompt(
@@ -105,9 +159,7 @@ with torch.no_grad():
 
     # # 5. Prepare latent variables
     num_channels_latents = unet.config.in_channels
-    latents = get_latents(
-        generator, batch_size, height, width, dtype
-    )
+    latents = get_latents(generator, batch_size, height, width, dtype)
 
     # # 6.2 Optionally get Guidance Scale Embedding
     # timestep_cond = None
@@ -119,11 +171,12 @@ with torch.no_grad():
 
     # 7. Denoising loop
     num_warmup_steps = len(timesteps) - num_inference_steps * noise_scheduler.order
-    _num_timesteps = len(timesteps)
 
-    for i, t in tqdm(enumerate(timesteps), total=_num_timesteps):
+    for i, t in tqdm(enumerate(timesteps), total=num_inference_steps):
         # expand the latents if we are doing classifier free guidance
-        latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+        latent_model_input = (
+            torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+        )
         latent_model_input = noise_scheduler.scale_model_input(latent_model_input, t)
 
         # predict the noise residual
@@ -138,7 +191,9 @@ with torch.no_grad():
         # perform guidance
         if do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            noise_pred = noise_pred_uncond + guidance_scale * (
+                noise_pred_text - noise_pred_uncond
+            )
 
         # TODO: not sure what this does
         # if do_classifier_free_guidance and self.guidance_rescale > 0.0:
@@ -146,7 +201,10 @@ with torch.no_grad():
         #     noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
 
         # compute the previous noisy sample x_t -> x_t-1
-        latents = noise_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+        # latents = noise_scheduler.step(noise_pred, t, latents, eta=0.0, return_dict=False)[0]
+        latents = noise_scheduler.step(
+            noise_pred, t, latents, generator=None, return_dict=False
+        )[0]
 
         # if callback_on_step_end is not None:
         #     callback_kwargs = {}
@@ -178,9 +236,11 @@ with torch.no_grad():
     # else:
     #     do_denormalize = [not has_nsfw for has_nsfw in has_nsfw_concept]
 
-        image = vae.decode(latents / vae.config.scaling_factor, return_dict=False, generator=generator)[
-            0
-        ]
+image = vae.decode(
+    latents / vae.config.scaling_factor, return_dict=False, generator=generator
+)[0]
 
-        image = image_processor.postprocess(image.detach(), output_type='pil', do_denormalize=[True] * image.shape[0])
-        image[0].save(f'inference_test/image_steps{t}.png')
+image = image_processor.postprocess(
+    image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
+)
+image[0].save(f"inference_test/image_steps{t}.png")
