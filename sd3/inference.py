@@ -184,7 +184,6 @@ def run_inference():
             latent_model_input = noise_scheduler.scale_model_input(
                 latent_model_input, t
             )
-
             # predict the noise residual
             noise_pred = unet(
                 latent_model_input,
