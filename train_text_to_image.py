@@ -43,14 +43,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from safetensors.torch import save_file
 
 import diffusers
-from diffusers import (
-    AutoencoderKL,
-    DDPMScheduler,
-    DDIMScheduler,
-    DiffusionPipeline,
-    StableDiffusionPipeline,
-    UNet2DConditionModel,
-)
+from sd3.model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils import (
@@ -62,7 +55,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-from config_sd import BUFFER_SIZE, REPO_NAME
+from config_sd import REPO_NAME
 
 
 if is_wandb_available():
@@ -166,26 +159,6 @@ def log_validation(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    parser.add_argument(
-        "--pretrained_model_name_or_path",
-        type=str,
-        default=None,
-        required=True,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--revision",
-        type=str,
-        default=None,
-        required=False,
-        help="Revision of pretrained model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--variant",
-        type=str,
-        default=None,
-        help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
-    )
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -569,77 +542,30 @@ def main():
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
-            data_dir=args.train_data_dir,
-        )
-    else:
-        data_files = {}
-        if args.train_data_dir is not None:
-            data_files["train"] = os.path.join(args.train_data_dir, "**")
-        dataset = load_dataset(
-            "imagefolder",
-            data_files=data_files,
-            cache_dir=args.cache_dir,
-        )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+    # if args.dataset_name is not None:
+    #     # Downloading and loading a dataset from the hub.
+    #     dataset = load_dataset(
+    #         args.dataset_name,
+    #         args.dataset_config_name,
+    #         cache_dir=args.cache_dir,
+    #         data_dir=args.train_data_dir,
+    #     )
+    # else:
+    #     data_files = {}
+    #     if args.train_data_dir is not None:
+    #         data_files["train"] = os.path.join(args.train_data_dir, "**")
+    #     dataset = load_dataset(
+    #         "imagefolder",
+    #         data_files=data_files,
+    #         cache_dir=args.cache_dir,
+    #     )
+    #     # See more about loading custom images at
+    #     # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
 
-    # Max number of actions in the action space
-    action_dim = max([elem for list in dataset["train"]["actions"] for elem in list])
-    # This will be used to encode the actions
-    action_embedding = torch.nn.Embedding(
-        num_embeddings=action_dim + 1, embedding_dim=768
-    )
-
-    # Load scheduler, tokenizer and models.
-    noise_scheduler = DDPMScheduler.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="scheduler"
-    )
-    noise_scheduler = DDIMScheduler()
-
-    vae = AutoencoderKL.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="vae",
-        revision=args.revision,
-        variant=args.variant,
-    )
-    unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="unet",
-        revision=args.revision,
-        variant=args.variant,
-    )
-
-    """
-    This is to accomodate concatenating previous frames in the channels dimension
-    """
-    old_conv_in = unet.conv_in
-    new_conv_in = torch.nn.Conv2d(
-        40, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
-    )
-
-    # Initialize the new conv layer with the weights from the old one
-    with torch.no_grad():
-        new_conv_in.weight[:, :4, :, :] = old_conv_in.weight
-        new_conv_in.weight[:, 4:, :, :] = 0  # Initialize new channels to 0
-        new_conv_in.bias = old_conv_in.bias
-
-    # Replace the conv_in layer
-    unet.conv_in = new_conv_in
-    unet.config["in_channels"] = 4 * BUFFER_SIZE
-
-    # TODO: unfreeze
-    unet.requires_grad_(False)
-    # TODO: unfreeze
-    vae.requires_grad_(False)
-    # text_encoder.requires_grad_(False)
-
-    # TODO: add actions embeddings
+    action_dim = max(dataset["test"][0]["actions"])
+    
+    unet, vae, action_embedding, noise_scheduler = get_model(action_dim)
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -797,13 +723,14 @@ def main():
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            dataset["train"] = (
-                dataset["train"]
+            # TODO: split
+            dataset["test"] = (
+                dataset["test"]
                 .shuffle(seed=args.seed)
                 .select(range(args.max_train_samples))
             )
         # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        train_dataset = dataset["test"].with_transform(preprocess_train)
 
     def collate_fn(examples):
         # Function to create a black screen tensor
@@ -817,9 +744,12 @@ def main():
         # Process each example
         processed_images = []
         for example in examples:
+            from config_sd import BUFFER_SIZE
             # Pad or truncate to 10 images
-            padded_images = example["images"][:10]
-            while len(padded_images) < 10:
+            padded_images = example["images"][:BUFFER_SIZE]
+
+            # TODO: confirm this is correct
+            while len(padded_images) < BUFFER_SIZE:
                 padded_images.append(create_black_screen(height, width))
 
             # Stack the 10 images for this example
@@ -831,7 +761,7 @@ def main():
         images = images.to(memory_format=torch.contiguous_format).float()
         return {
             "images": images,
-            "actions": torch.tensor([example["actions"] for example in examples]),
+            "actions": torch.tensor([example["actions"][:BUFFER_SIZE] for example in examples]),
         }
 
     # DataLoaders creation:
