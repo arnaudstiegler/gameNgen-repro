@@ -33,34 +33,33 @@ def read_action_embedding_from_safetensors(file_path: str):
 def get_latents(
     noise_scheduler: DDPMScheduler,
     prev_frames: List[torch.Tensor],
-    prev_frames: List[torch.Tensor],
     device: torch.device,
     dtype=torch.float32,
 ):
-
-    latents = torch.concat(prev_frames, dim=1).to(device).type(dtype)
 
     latents = torch.concat(prev_frames, dim=1).to(device).type(dtype)
     # scale the initial noise by the standard deviation required by the scheduler
     latents = latents * noise_scheduler.init_noise_sigma
     return latents
 
-def run_inference(images):
-    device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
-    
-    
-    unet = (
-        UNet2DConditionModel.from_pretrained(REPO_NAME, subfolder="unet")
-        .eval()
-        .to(device)
-    )
-    vae = AutoencoderKL.from_pretrained(REPO_NAME, subfolder="vae").eval().to(device)
+def run_inference(images, unet=None, vae=None, device=None):
+    if device is None:
+        device = torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+        
+    if unet is None:
+        unet = (
+            UNet2DConditionModel.from_pretrained(REPO_NAME, subfolder="unet")
+            .eval()
+            .to(device)
+        )
+    if vae is None:
+        vae = AutoencoderKL.from_pretrained(REPO_NAME, subfolder="vae").eval().to(device)
     noise_scheduler = DDIMScheduler.from_pretrained(
         REPO_NAME, subfolder="noise_scheduler"
     )
@@ -93,7 +92,7 @@ def run_inference(images):
 
         prev_frames = []
         for img in images:
-            original_image = img.reshape(1, 3, width, height).to(device)
+            original_image = img.unsqueeze(0).to(device)
             encoded_image = vae.encode(original_image).latent_dist.sample()
             encoded_image *= vae.config.scaling_factor
             prev_frames.append(encoded_image)
@@ -102,7 +101,6 @@ def run_inference(images):
         
         latents = get_latents(
             noise_scheduler,
-            prev_frames,
             prev_frames,
             device,
             dtype,
@@ -137,7 +135,6 @@ def run_inference(images):
             latent = noise_scheduler.step(
                 noise_pred, t, latent, generator=None, return_dict=False
             )[0]
-           
 
             image = vae.decode(
                 latent / vae.config.scaling_factor, return_dict=False, generator=generator
@@ -146,10 +143,9 @@ def run_inference(images):
             image = image_processor.postprocess(
                 image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
             )
-            image[0].save(f"./image_steps_{i}.png")
-            images.append(image)
-    return images
-            
+            images.extend(image)
+        return images
+
 
 if __name__ == "__main__":
     images = [torch.randn(3, 512, 512) for _ in range(9)]

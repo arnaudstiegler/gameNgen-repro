@@ -41,6 +41,8 @@ def get_model(action_dim: int):
         new_conv_in.weight[:, :4, :, :] = old_conv_in.weight
         new_conv_in.weight[:, 4:, :, :] = 0  # Initialize new channels to 0
         new_conv_in.bias = old_conv_in.bias
+        # init random weights for the new channels
+        torch.nn.init.xavier_uniform_(new_conv_in.weight[:, 4:, :, :])
 
     # Replace the conv_in layer
     unet.conv_in = new_conv_in

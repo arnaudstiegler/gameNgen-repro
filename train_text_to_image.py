@@ -25,6 +25,7 @@ from pathlib import Path
 
 import datasets
 import numpy as np
+from sd3.run_inference import run_inference
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -39,7 +40,6 @@ from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, CLIPTokenizer
 from safetensors.torch import save_file
 
 import diffusers
@@ -62,7 +62,6 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.31.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -109,56 +108,44 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned on
 
 
 def log_validation(
-    pipeline,
-    args,
-    accelerator,
-    epoch,
-    is_final_validation=False,
+    batch,
+    device,
+    unet,
+    vae
 ):
     """
     Here, we wanna validate different actions based on the same sample (doesn't really matter for now testing different samples)
     """
     logger.info(
-        f"Running validation... \n Generating {args.num_validation_images} images"
+        f"Running validation..."
     )
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
-    generator = torch.Generator(device=accelerator.device)
-    if args.seed is not None:
-        generator = generator.manual_seed(args.seed)
+    generator = torch.Generator(device=device)
+    # randomly choose one sequence of batch
+    batch_index = torch.randint(0, batch["images"].shape[0], (1,), generator=generator, device=device).item()
+    validation_batch = batch["images"][batch_index]
+    buffer_len, *image_dims = validation_batch.shape
     images = []
+    for i in range(buffer_len - 1):
+        images.append(validation_batch[i])
+        
     if torch.backends.mps.is_available():
         autocast_ctx = nullcontext()
     else:
-        autocast_ctx = torch.autocast(accelerator.device.type)
-
+        autocast_ctx = torch.autocast(device.type)
     with autocast_ctx:
-        for _ in range(args.num_validation_images):
-            images.append(
-                pipeline(
-                    args.validation_prompt, num_inference_steps=30, generator=generator
-                ).images[0]
-            )
-
-    for tracker in accelerator.trackers:
-        phase_name = "test" if is_final_validation else "validation"
-        if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images(phase_name, np_images, epoch, dataformats="NHWC")
-        if tracker.name == "wandb":
-            tracker.log(
-                {
-                    phase_name: [
-                        wandb.Image(image, caption=f"{i}")
-                        for i, image in enumerate(images)
-                    ]
-                }
-            )
-    return images
+        generated_images = run_inference(images, device=device, unet=unet, vae=vae)
+        
+    return generated_images, validation_batch
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser.add_argument(
+        "--pretrained_model_name_or_path",
+        type=str,
+        default="CompVis/stable-diffusion-v1-4",
+        help="The model checkpoint for weights initialization.",
+    )
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -236,7 +223,7 @@ def parse_args():
     parser.add_argument(
         "--cache_dir",
         type=str,
-        default=None,
+        default="/datadrive_1/.cache",
         help="The directory where the downloaded models and datasets will be stored.",
     )
     parser.add_argument(
@@ -541,29 +528,26 @@ def main():
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
-    # if args.dataset_name is not None:
-    #     # Downloading and loading a dataset from the hub.
-    #     dataset = load_dataset(
-    #         args.dataset_name,
-    #         args.dataset_config_name,
-    #         cache_dir=args.cache_dir,
-    #         data_dir=args.train_data_dir,
-    #     )
-    # else:
-    #     data_files = {}
-    #     if args.train_data_dir is not None:
-    #         data_files["train"] = os.path.join(args.train_data_dir, "**")
-    #     dataset = load_dataset(
-    #         "imagefolder",
-    #         data_files=data_files,
-    #         cache_dir=args.cache_dir,
-    #     )
-    #     # See more about loading custom images at
-    #     # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
-    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    if args.dataset_name is not None:
+        # Downloading and loading a dataset from the hub.
+        dataset = load_dataset(
+            args.dataset_name,
+            cache_dir=args.cache_dir,
+            data_dir=args.train_data_dir,
+        )
+    else:
+        data_files = {}
+        if args.train_data_dir is not None:
+            data_files["train"] = os.path.join(args.train_data_dir, "**")
+        dataset = load_dataset(
+            "imagefolder",
+            data_files=data_files,
+            cache_dir=args.cache_dir,
+        )
+        # See more about loading custom images at
+        # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
 
-    action_dim = max(dataset["test"][0]["actions"])
+    action_dim = max(dataset["train"][0]["actions"])
     
     unet, vae, action_embedding, noise_scheduler = get_model(action_dim)
 
@@ -700,7 +684,7 @@ def main():
             # transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
             # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
-            # transforms.Normalize([0.5], [0.5]),
+            transforms.Normalize([0.5], [0.5]),
         ]
     )
 
@@ -724,13 +708,13 @@ def main():
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             # TODO: split
-            dataset["test"] = (
-                dataset["test"]
+            dataset["train"] = (
+                dataset["train"]
                 .shuffle(seed=args.seed)
                 .select(range(args.max_train_samples))
             )
         # Set the training transforms
-        train_dataset = dataset["test"].with_transform(preprocess_train)
+        train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
         # Function to create a black screen tensor
@@ -891,50 +875,51 @@ def main():
                 action_hidden_states = action_embedding(batch["actions"])
 
                 # Convert images to latent space
-                bs, buffer_len, channels, height, width = batch["images"].shape
+                batch_size, buffer_len, *image_dims = batch["images"].shape
+                latent_dim = vae.encode(batch["images"][:, 0, :].to(dtype=weight_dtype)).latent_dist.sample().shape[1:]
+                scaling_factor = vae.config.scaling_factor
 
-                # Ugly for now:
-                aggregator = []
-                for i in range(buffer_len):
-                    latents = vae.encode(
-                        batch["images"][:, i, :].to(dtype=weight_dtype)
-                    ).latent_dist.sample()
-                    latents = latents * vae.config.scaling_factor
+                # Step 1: Encode all frames at once
+                # Reshape to [batch_size * buffer_len, C, H, W] for batch encoding
+                flattened_images = batch["images"].reshape(-1, *image_dims).to(dtype=weight_dtype)
+                encoded_latents = vae.encode(flattened_images).latent_dist.sample() * scaling_factor
+                # Reshape back to [batch_size, buffer_len, *latent_dim, H', W']
+                encoded_latents = encoded_latents.view(batch_size, buffer_len, *encoded_latents.shape[1:])
 
-                    if i == buffer_len - 1:
-                        # Sample noise that we'll add to the latents
-                        noise = torch.randn_like(latents)
-                        if args.noise_offset:
-                            # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                            noise += args.noise_offset * torch.randn(
-                                (latents.shape[0], latents.shape[1], 1, 1),
-                                device=latents.device,
-                            )
+                # Step 2: Handle the last frame separately
+                # Extract the last frame's latents
+                last_latents = encoded_latents[:, -1, :].clone()  # [batch_size, *latent_dim, H', W']
 
-                        bsz = latents.shape[0]
-                        # Sample a random timestep for each image
-                        timesteps = torch.randint(
-                            0,
-                            noise_scheduler.config.num_train_timesteps,
-                            (bsz,),
-                            device=latents.device,
-                        )
-                        timesteps = timesteps.long()
+                # Generate noise
+                noise = torch.randn_like(last_latents)
+                if args.noise_offset:
+                    # Apply noise offset as per the specified method
+                    offset_noise = args.noise_offset * torch.randn(
+                        (last_latents.shape[0], last_latents.shape[1], 1, 1), device=last_latents.device
+                    )
+                    noise += offset_noise
 
-                        # Add noise to the latents according to the noise magnitude at each timestep
-                        # (this is the forward diffusion process)
-                        # TODO: this noise should prob. only be added to the last frame?
-                        noisy_latents = noise_scheduler.add_noise(
-                            latents, noise, timesteps
-                        )
+                # Sample random timesteps for each image in the batch
+                timesteps = torch.randint(
+                    low=0,
+                    high=noise_scheduler.config.num_train_timesteps,
+                    size=(batch_size,),
+                    device=last_latents.device,
+                    dtype=torch.long
+                )
 
-                        aggregator.append(noisy_latents)
-                    else:
-                        aggregator.append(latents)
+                # Add noise to the last frame's latents
+                noisy_last_latents = noise_scheduler.add_noise(last_latents, noise, timesteps)
 
-                # Here we basically concatenate previous frames to the last noisy frame
-                concatenated_latents = torch.concat(aggregator, dim=1)
-                # Get the text embedding for conditioning
+                # Replace the last frame's latents with the noisy version
+                encoded_latents[:, -1, :] = noisy_last_latents
+
+                # Step 3: Concatenate all latents along the buffer dimension
+                # Reshape to [batch_size, buffer_len * latent_dim, H', W'] if needed
+                # Adjust the concatenation dimension based on your specific requirements
+                concatenated_latents = encoded_latents.reshape(batch_size, -1, *encoded_latents.shape[3:])
+
+                                # Get the text embedding for conditioning
                 # encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
                 # Get the target for loss depending on the prediction type
@@ -947,7 +932,7 @@ def main():
                 if noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
                 elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                    target = noise_scheduler.get_velocity(last_latents, noise, timesteps)
                 else:
                     raise ValueError(
                         f"Unknown prediction type {noise_scheduler.config.prediction_type}"
@@ -1063,25 +1048,24 @@ def main():
                 "lr": lr_scheduler.get_last_lr()[0],
             }
             progress_bar.set_postfix(**logs)
+            if args.report_to == "wandb":
+                wandb.log(logs)
 
             if global_step >= args.max_train_steps:
                 break
 
-        # TODO: uncomment
-        # if accelerator.is_main_process:
-        #     if epoch % args.validation_epochs == 0:
-        #         # create pipeline
-        #         pipeline = DiffusionPipeline.from_pretrained(
-        #             args.pretrained_model_name_or_path,
-        #             unet=unwrap_model(unet),
-        #             revision=args.revision,
-        #             variant=args.variant,
-        #             torch_dtype=weight_dtype,
-        #         )
-        #         images = log_validation(pipeline, args, accelerator, epoch)
+        if accelerator.is_main_process:
+            # only use the last batch for validation for now
+            if epoch % args.validation_epochs == 0:
+                images, _ = log_validation(batch, device=accelerator.device, unet=unet, vae=vae)
+                if args.report_to == "wandb":
+                    logging_images = [
+                        wandb.Image(image) if i % 5 == 0 else None for i, image in enumerate(images)
+                    ]
+                    logging_images = list(filter(lambda x: x is not None, logging_images))
+                    wandb.log({"validation_images": logging_images})
 
-        #         del pipeline
-        #         torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
 
     # Save the model
     accelerator.wait_for_everyone()
