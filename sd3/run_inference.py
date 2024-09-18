@@ -132,7 +132,6 @@ def run_inference(images):
             )[0]
            
 
-            print(latent.shape)
             image = vae.decode(
                 latent / vae.config.scaling_factor, return_dict=False, generator=generator
             )[0]
