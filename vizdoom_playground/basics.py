@@ -17,11 +17,11 @@ from time import sleep
 
 import vizdoom as vzd
 
-print('test')
+print("test")
 
 
 if __name__ == "__main__":
-    print('start')
+    print("start")
     # Create DoomGame instance. It will run the game and communicate with you.
     game = vzd.DoomGame()
 
@@ -148,7 +148,6 @@ if __name__ == "__main__":
         game.new_episode()
 
         while not game.is_episode_finished():
-
             # Gets the state
             state = game.get_state()
 
@@ -173,7 +172,9 @@ if __name__ == "__main__":
             # List of all sectors (map geometry), may be None if not first enabled.
             sectors = state.sectors
 
-            import ipdb; ipdb.set_trace()
+            import ipdb
+
+            ipdb.set_trace()
             # test
 
             # Games variables can be also accessed via

@@ -16,6 +16,7 @@ from safetensors import safe_open
 import torch
 
 REPO_NAME = 'arnaudstiegler/sd-model-gameNgen'
+REPO_NAME = 'arnaudstiegler/sd-model-gameNgen'
 torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
@@ -32,9 +33,12 @@ def read_action_embedding_from_safetensors(file_path: str):
 def get_latents(
     noise_scheduler: DDPMScheduler,
     prev_frames: List[torch.Tensor],
+    prev_frames: List[torch.Tensor],
     device: torch.device,
     dtype=torch.float32,
 ):
+
+    latents = torch.concat(prev_frames, dim=1).to(device).type(dtype)
 
     latents = torch.concat(prev_frames, dim=1).to(device).type(dtype)
     # scale the initial noise by the standard deviation required by the scheduler
@@ -49,6 +53,7 @@ def run_inference(images):
         if torch.backends.mps.is_available()
         else "cpu"
     )
+    
     
     unet = (
         UNet2DConditionModel.from_pretrained(REPO_NAME, subfolder="unet")
@@ -68,6 +73,7 @@ def run_inference(images):
     )
 
     # Defining all config-related variables here
+    batch_size = 1
     batch_size = 1
     do_classifier_free_guidance = True
     actions = [1]
@@ -96,6 +102,7 @@ def run_inference(images):
         
         latents = get_latents(
             noise_scheduler,
+            prev_frames,
             prev_frames,
             device,
             dtype,

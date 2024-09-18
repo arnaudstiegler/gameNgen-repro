@@ -1,17 +1,19 @@
-from pydantic import BaseModel
-from typing import List, Dict, Any
+from dataclasses import dataclass
+from typing import List
+from datasets import load_dataset
+from PIL import Image as pil_image
 import pickle
 
-class Episode(BaseModel):
-    actions: List[List[int]]
-    frames: List[Dict[str, Any]]
 
-def load_episode(episode_path: str) -> Episode:
-    with open(episode_path, "rb") as f:
-        pickled_eps = pickle.load(f)
-        return Episode(**pickled_eps)
+# TODO: probably not needed unless we need some utils functions on top of it
+@dataclass
+class Episode:
+    sample_id: str
+    health: List[int]
+    actions: List[int]
+    images: List[pil_image.Image]
 
 
 if __name__ == "__main__":
-    episode = load_episode("data/episode_0.pkl")
-    print(episode)
+    ds = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    episode = Episode(**ds["test"][0])
