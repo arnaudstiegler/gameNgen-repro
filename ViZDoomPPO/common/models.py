@@ -3,8 +3,6 @@ import torch as th
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch import nn
 
-from common.monitoring import register_hooks
-
 
 class CustomCNN(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 128, **kwargs):
@@ -51,5 +49,4 @@ def init_net(m: nn.Module):
 
 
 def init_model(model):
-    register_hooks(model)
     init_net(model.policy)

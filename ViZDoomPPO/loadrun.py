@@ -1,19 +1,3 @@
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
-#   /$$    /$$ /$$           /$$$$$$$                                          /$$$$$$$  /$$$$$$$   /$$$$$$    #
-#  | $$   | $$|__/          | $$__  $$                                        | $$__  $$| $$__  $$ /$$__  $$   #
-#  | $$   | $$ /$$ /$$$$$$$$| $$  \ $$  /$$$$$$   /$$$$$$  /$$$$$$/$$$$       | $$  \ $$| $$  \ $$| $$  \ $$   #
-#  |  $$ / $$/| $$|____ /$$/| $$  | $$ /$$__  $$ /$$__  $$| $$_  $$_  $$      | $$$$$$$/| $$$$$$$/| $$  | $$   #
-#   \  $$ $$/ | $$   /$$$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$ \ $$ \ $$      | $$____/ | $$____/ | $$  | $$   #
-#    \  $$$/  | $$  /$$__/  | $$  | $$| $$  | $$| $$  | $$| $$ | $$ | $$      | $$      | $$      | $$  | $$   #
-#     \  $/   | $$ /$$$$$$$$| $$$$$$$/|  $$$$$$/|  $$$$$$/| $$ | $$ | $$      | $$      | $$      |  $$$$$$/   #
-#      \_/    |__/|________/|_______/  \______/  \______/ |__/ |__/ |__/      |__/      |__/       \______/    #
-#                                                                                                              #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #                                                                                                
-                                                                                                         
-# FORK OF LEANDRO KIELIGER'S DOOM PPO TUTORIAL: https://lkieliger.medium.com/deep-reinforcement-learning-in-practice-by-playing-doom-part-1-getting-started-618c99075c77                                                                                                       
-
-# SCRIPT TO GENERATE A PARQUET OR GIF FROM PRETRAINED PPO AGENT. 
-
 import imageio
 import numpy as np
 import vizdoom
@@ -31,8 +15,29 @@ from stable_baselines3.common.vec_env import (
 )
 
 from PIL import Image as pil_image
-
+from tqdm import tqdm
 from datasets import Dataset, Features, Image, Value, Sequence
+import argparse
+from huggingface_hub import HfApi
+import pandas as pd
+
+import base64
+import io
+from PIL import Image as PILImage
+
+import os
+import zipfile
+from huggingface_hub import HfApi
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+import os
+import pickle
+import pandas as pd
+from tqdm import tqdm
+import numpy as np
+from collections import deque
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -323,8 +328,8 @@ class DoomWithBotsCurriculum(DoomWithBotsShaped):
                 run_mean > REWARD_THRESHOLDS[self.level]
                 and len(self.last_rewards) >= self.rolling_mean_length
             ):
+                print("Changing difficulty!")
                 self._change_difficulty()
-
         return state, reward, done, infos
 
     def reset(self):
@@ -349,7 +354,7 @@ def game_instance(scenario):
     game = vizdoom.DoomGame()
     game.load_config(f"scenarios/{scenario}.cfg")
     game.add_game_args(envs.DOOM_ENV_WITH_BOTS_ARGS)
-    # game.set_window_visible(False)
+    game.set_window_visible(False)
     game.init()
 
     return game
@@ -409,6 +414,7 @@ def make_gif(agent, file_path, num_episodes=1):
 
             actions.append(action)
             images.append(screen)
+            
 
     print("Health values:", health_values)
     print("Number of health values:", len(health_values))
@@ -422,20 +428,40 @@ def make_gif(agent, file_path, num_episodes=1):
     return health_values  # Return the health values for further analysis if needed
 
 
-def make_parquet(agent, parquet_path, num_episodes=1):
+
+def serialize_image(image_array):
+    img = PILImage.fromarray(image_array)
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+
+def process_buffer(buffer, episode_id, step_id):
+    return {
+        'episode_id': episode_id,
+        'step_id': step_id,
+        'health': [int(h) for h in buffer['health']],
+        'actions': [int(a) for a in buffer['actions']],
+        'images': [serialize_image(img) for img in buffer['images']]
+    }
+
+def make_pkls_dataset(agent, output_dir, num_episodes=1, buffer_size=10):
     env = dummy_vec_env_with_bots_curriculum(1, **eval_env_args)
+    os.makedirs(output_dir, exist_ok=True)
 
-    entries = []
+    for episode in tqdm(range(num_episodes), desc="Episodes"):
+        episode_dir = os.path.join(output_dir, f"episode_{episode}")
+        os.makedirs(episode_dir, exist_ok=True)
 
-    for episode in range(num_episodes):
-        print(f"Episode {episode+1} of {num_episodes}")
         obs = env.reset()
         done = False
 
-        episode_health = []
-        episode_actions = []
-        episode_images = []
-
+        buffer = {
+            'health': deque(maxlen=buffer_size),
+            'actions': deque(maxlen=buffer_size),
+            'images': deque(maxlen=buffer_size)
+        }
+        step_id = 0
         while not done:
             action, _ = agent.predict(obs)
             obs, _, done, _ = env.step(action)
@@ -443,52 +469,108 @@ def make_parquet(agent, parquet_path, num_episodes=1):
             screen = env.venv.envs[0].game.get_state().screen_buffer
             health = env.venv.envs[0].game.get_game_variable(GameVariable.HEALTH)
 
-            # Convert screen to PIL Image
-            pil_img = pil_image.fromarray(screen)
+            buffer['health'].append(int(health))
+            buffer['actions'].append(int(action[0]))
+            buffer['images'].append(screen)
 
-            episode_health.append(int(health))
-            episode_actions.append(
-                int(action[0])
-            )  # Assuming action is a 1-element array
-            episode_images.append(pil_img)
+            if len(buffer['health']) == buffer_size:
+                processed_buffer = process_buffer(buffer, episode, step_id)
+                pkl_path = os.path.join(episode_dir, f"buffer_{step_id}.pkl")
+                with open(pkl_path, 'wb') as f:
+                    pickle.dump(processed_buffer, f)
+                step_id += 1
 
-        entries.append(
-            {
-                "sample_id": episode,
-                "health": episode_health,
-                "actions": episode_actions,
-                "images": episode_images,
-            }
-        )
-
-    # Define features for the dataset
-    features = Features(
-        {
-            "sample_id": Value("int32"),
-            "health": Sequence(Value("int32")),
-            "actions": Sequence(Value("int32")),
-            "images": Sequence(Image()),
-        }
-    )
-
-    # Create the dataset
-    dataset = Dataset.from_list(entries, features=features)
-
-    # Save to Parquet
-    dataset.to_parquet(parquet_path)
-
-    print(f"Data saved to {parquet_path}")
     env.close()
 
+def concatenate_pkls_to_parquet(input_dir, output_parquet, batch_size=1000):
+    schema = pa.schema([
+        ('episode_id', pa.int32()),
+        ('step_id', pa.int32()),
+        ('health', pa.list_(pa.int32())),
+        ('actions', pa.list_(pa.int32())),
+        ('images', pa.list_(pa.string()))
+    ])
 
-MODEL_PATH = "/Users/pbowmandavis/Downloads/gameNgen-repro/stable_baselines_playground/rl-doom/standalone_examples/logs/models/dm_longrun_test/final_model.zip"
+    writer = None
+    batch = []
+
+    for episode_dir in tqdm(os.listdir(input_dir), desc="Processing episodes"):
+        episode_path = os.path.join(input_dir, episode_dir)
+        if os.path.isdir(episode_path):
+            for pkl_file in os.listdir(episode_path):
+                if pkl_file.endswith('.pkl'):
+                    with open(os.path.join(episode_path, pkl_file), 'rb') as f:
+                        data = pickle.load(f)
+                        batch.append(data)
+
+                    if len(batch) >= batch_size:
+                        df = pd.DataFrame(batch)
+                        table = pa.Table.from_pandas(df, schema=schema)
+
+                        if writer is None:
+                            writer = pq.ParquetWriter(output_parquet, schema)
+
+                        writer.write_table(table)
+                        batch = []
+
+    # Write any remaining data
+    if batch:
+        df = pd.DataFrame(batch)
+        table = pa.Table.from_pandas(df, schema=schema)
+        if writer is None:
+            writer = pq.ParquetWriter(output_parquet, schema)
+        writer.write_table(table)
+
+    if writer:
+        writer.close()
+
+    print(f"Data saved to {output_parquet}")
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Generate GIF or Parquet file from pretrained PPO agent")
+    parser.add_argument("--output", choices=["gif", "parquet"], required=True, help="Output format")
+    parser.add_argument("--episodes", type=int, default=1, help="Number of episodes to run")
+    parser.add_argument("--upload", action="store_true", help="Upload the output to Hugging Face Hub")
+    parser.add_argument("--hf_token", help="Hugging Face API token")
+    parser.add_argument("--hf_repo", help="Hugging Face repository name")
+    return parser.parse_args()
+
+MODEL_PATH = "logs/models/dm_longrun_test/2point5mil_iter_skip2.zip"
+
+def zip_directory(directory_path, zip_path):
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(directory_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, directory_path)
+                zipf.write(file_path, arcname)
+
+def upload_to_hf(local_path, repo_id, token):
+    api = HfApi()
+    try:
+        # Ensure the dataset repository exists
+        api.create_repo(repo_id=repo_id, token=token, repo_type="dataset", exist_ok=True)
+        
+        # Upload the zip file
+        api.upload_file(
+            path_or_fileobj=local_path,
+            path_in_repo=os.path.basename(local_path),
+            repo_id=repo_id,
+            repo_type="dataset",
+            token=token,
+        )
+        print(f"Uploaded {local_path} to dataset {repo_id}")
+    except Exception as e:
+        print(f"Error uploading file: {e}")
 
 if __name__ == "__main__":
+    args = parse_arguments()
+
     scenario = "deathmatch_simple"
 
     env_args = {
         "scenario": scenario,
-        "frame_skip": 2,
+        "frame_skip": 1,
         "frame_processor": envs.default_frame_processor,
         "n_bots": 8,
         "shaping": True,
@@ -504,5 +586,24 @@ if __name__ == "__main__":
         new_env,
     )
 
-    make_gif(agent2,"./testout.gif",num_episodes=1)
-    # make_parquet(agent2,"./test.parquet",num_episodes=1)
+    if args.output == "gif":
+        output_file = "./output.gif"
+        make_gif(agent2, output_file, num_episodes=args.episodes)
+    else:
+        output_dir = "./dataset"
+        make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes)
+
+    if args.upload:
+        if not args.hf_token or not args.hf_repo:
+            print("Error: --hf_token and --hf_repo are required for uploading to Hugging Face Hub")
+        else:
+            if args.output == "gif":
+                upload_to_hf(output_file, args.hf_repo, args.hf_token)
+            else:
+                # Zip the dataset directory
+                parquet_path="./dataset.parquet"
+                concatenate_pkls_to_parquet(output_dir, parquet_path)
+                
+                # Upload the zipped file
+                upload_to_hf(parquet_path, args.hf_repo, args.hf_token)
+    

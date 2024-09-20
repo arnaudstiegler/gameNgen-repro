@@ -14,7 +14,6 @@ MUTUALLY_EXCLUSIVE_GROUPS = [
 # Buttons that can only be used alone.
 EXCLUSIVE_BUTTONS = [Button.ATTACK]
 
-
 def has_exclusive_button(actions: np.ndarray, buttons: np.array) -> np.array:
     exclusion_mask = np.isin(buttons, EXCLUSIVE_BUTTONS)
 

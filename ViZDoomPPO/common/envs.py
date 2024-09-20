@@ -11,21 +11,15 @@ from stable_baselines3.ppo import ppo, policies
 from vizdoom import GameVariable
 
 from common.models import init_model
-from common.monitoring import LayerActivationMonitoring
 from common.utils import get_available_actions
 
 from tqdm import tqdm
 import time
-from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecTransposeImage
 
-import typing as t
-from stable_baselines3 import ppo
-from stable_baselines3.common import vec_env
-from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
-from stable_baselines3.common import policies
 import torch
 import os 
-import matplotlib.pyplot as plt
 import sys
 
 Frame = np.ndarray
@@ -193,8 +187,6 @@ def create_env_with_bots(scenario: str, **kwargs) -> DoomEnv:
     game.init()
 
     return DoomWithBots(game, **kwargs)
-
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecTransposeImage
 
 def create_vec_env(n_envs: int = 1, **kwargs) -> VecTransposeImage:
     return VecTransposeImage(SubprocVecEnv([lambda: create_env(**kwargs) for _ in range(n_envs)]))
