@@ -1,3 +1,19 @@
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#   /$$    /$$ /$$           /$$$$$$$                                          /$$$$$$$  /$$$$$$$   /$$$$$$     #
+#  | $$   | $$|__/          | $$__  $$                                        | $$__  $$| $$__  $$ /$$__  $$    #
+#  | $$   | $$ /$$ /$$$$$$$$| $$  \ $$  /$$$$$$   /$$$$$$  /$$$$$$/$$$$       | $$  \ $$| $$  \ $$| $$  \ $$    #
+#  |  $$ / $$/| $$|____ /$$/| $$  | $$ /$$__  $$ /$$__  $$| $$_  $$_  $$      | $$$$$$$/| $$$$$$$/| $$  | $$    #
+#   \  $$ $$/ | $$   /$$$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$ \ $$ \ $$      | $$____/ | $$____/ | $$  | $$    #
+#    \  $$$/  | $$  /$$__/  | $$  | $$| $$  | $$| $$  | $$| $$ | $$ | $$      | $$      | $$      | $$  | $$    #
+#     \  $/   | $$ /$$$$$$$$| $$$$$$$/|  $$$$$$/|  $$$$$$/| $$ | $$ | $$      | $$      | $$      |  $$$$$$/    #
+#      \_/    |__/|________/|_______/  \______/  \______/ |__/ |__/ |__/      |__/      |__/       \______/     #
+#                                                                                                               #
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #                                                                                                
+                                                                                                         
+# FORK OF LEANDRO KIELIGER'S DOOM PPO TUTORIAL: https://lkieliger.medium.com/deep-reinforcement-learning-in-practice-by-playing-doom-part-1-getting-started-618c99075c77                                                                                                       
+
+# SCRIPT TO RUN PPO AGENT AND GENERATE DATASET FOR DOOM ENVIRONMENT. 
+
 import imageio
 import numpy as np
 import vizdoom
@@ -584,7 +600,10 @@ if __name__ == "__main__":
         make_gif(agent2, output_file, num_episodes=args.episodes)
     else:
         output_dir = "./dataset"
-        make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes)
+        # make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes)
+        # Zip the dataset directory
+        parquet_path="./dataset.parquet"
+        # concatenate_pkls_to_parquet(output_dir, parquet_path)
 
     if args.upload:
         if not args.hf_token or not args.hf_repo:
@@ -593,10 +612,6 @@ if __name__ == "__main__":
             if args.output == "gif":
                 upload_to_hf(output_file, args.hf_repo, args.hf_token)
             else:
-                # Zip the dataset directory
-                parquet_path="./dataset.parquet"
-                concatenate_pkls_to_parquet(output_dir, parquet_path)
-                
                 # Upload the zipped file
                 upload_to_hf(parquet_path, args.hf_repo, args.hf_token)
     
