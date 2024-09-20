@@ -564,7 +564,7 @@ def main():
     dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
 
     action_dim = max(dataset["test"][0]["actions"])
-    
+
     unet, vae, action_embedding, noise_scheduler = get_model(action_dim)
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
@@ -745,6 +745,7 @@ def main():
         processed_images = []
         for example in examples:
             from config_sd import BUFFER_SIZE
+
             # Pad or truncate to 10 images
             padded_images = example["images"][:BUFFER_SIZE]
 
@@ -761,7 +762,9 @@ def main():
         images = images.to(memory_format=torch.contiguous_format).float()
         return {
             "images": images,
-            "actions": torch.tensor([example["actions"][:BUFFER_SIZE] for example in examples]),
+            "actions": torch.tensor(
+                [example["actions"][:BUFFER_SIZE] for example in examples]
+            ),
         }
 
     # DataLoaders creation:
@@ -882,10 +885,10 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    for epoch in range(first_epoch, args.num_train_epochs):
+    for _ in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
-        for step, batch in enumerate(train_dataloader):
+        for _, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Embed the actions first
                 action_hidden_states = action_embedding(batch["actions"])
@@ -893,7 +896,7 @@ def main():
                 # Convert images to latent space
                 bs, buffer_len, channels, height, width = batch["images"].shape
 
-                # Ugly for now:
+                # Ugly for now, can be parallelize by adding a zero vector everywhere except for the last frame
                 aggregator = []
                 for i in range(buffer_len):
                     latents = vae.encode(
@@ -952,7 +955,7 @@ def main():
                     raise ValueError(
                         f"Unknown prediction type {noise_scheduler.config.prediction_type}"
                     )
-
+                import ipdb; ipdb.set_trace()
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     concatenated_latents,

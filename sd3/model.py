@@ -8,7 +8,7 @@ PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 
 def get_model(action_dim: int):
     # Max number of actions in the action space
-    
+
     # This will be used to encode the actions
     action_embedding = torch.nn.Embedding(
         num_embeddings=action_dim + 1, embedding_dim=768
@@ -19,13 +19,9 @@ def get_model(action_dim: int):
         PRETRAINED_MODEL_NAME_OR_PATH, subfolder="scheduler"
     )
 
-    vae = AutoencoderKL.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH,
-        subfolder="vae"
-    )
+    vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="vae")
     unet = UNet2DConditionModel.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH,
-        subfolder="unet"
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="unet"
     )
 
     """

@@ -1,16 +1,10 @@
 from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 from config_sd import REPO_NAME
-from diffusers import (
-    AutoencoderKL,
-    DDIMScheduler,
-    UNet2DConditionModel,
-    DDPMScheduler,
-    StableDiffusionPipeline,
-)
+from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel, DDPMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPImageProcessor
 import torch
-from typing import List
+from typing import List, Optional
 from diffusers.utils.torch_utils import randn_tensor
 from tqdm import tqdm
 from diffusers.image_processor import VaeImageProcessor
@@ -18,6 +12,11 @@ import numpy as np
 import random
 from safetensors import safe_open
 import torch
+from datasets import load_dataset
+from config_sd import BUFFER_SIZE
+from torchvision import transforms
+from PIL import Image
+from config_sd import HEIGHT, WIDTH
 
 
 torch.manual_seed(9052924)
@@ -97,6 +96,22 @@ def encode_prompt(
     return prompt_embeds, negative_prompt_embeds
 
 
+def encode_conditioning_frames(
+    vae: AutoencoderKL, conditioning_frames: list[Image.Image], dtype: torch.dtype
+):
+    to_tensor = transforms.ToTensor()
+
+    # Convert PIL Image to torch tensor
+    conditioning_frames_tensor = torch.stack(
+        [to_tensor(image.convert("RGB")) for image in conditioning_frames]
+    )
+    conditioning_frames = vae.encode(
+        conditioning_frames_tensor.to(device=vae.device, dtype=dtype)
+    ).latent_dist.sample()
+    conditioning_frames = conditioning_frames * vae.config.scaling_factor
+    return conditioning_frames
+
+
 def get_latents(
     noise_scheduler: DDPMScheduler,
     batch_size: int,
@@ -107,9 +122,11 @@ def get_latents(
     device: torch.device,
     dtype=torch.float32,
 ):
+    # TODO: here we need to 1) generate a random tensor for the last frame and 2) concatenate the conditioning frames to it
+
     shape = (
         batch_size,
-        num_channels_latents,
+        num_channels_latents // BUFFER_SIZE,
         int(height) // vae_scale_factor,
         int(width) // vae_scale_factor,
     )
@@ -121,6 +138,11 @@ def get_latents(
 
 
 def run_inference():
+    # Load the dataset for the conditioning frames
+    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    # TODO: should it be BUFFER_SIZE-1 or BUFFER_SIZE?
+    conditioning_frames = dataset["test"][0]["images"][: BUFFER_SIZE - 1]
+
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -157,8 +179,10 @@ def run_inference():
     generator = torch.Generator(device=device)
     dtype = next(unet.parameters()).dtype
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
-    height = unet.config.sample_size * vae_scale_factor
-    width = unet.config.sample_size * vae_scale_factor
+    # height = unet.config.sample_size * vae_scale_factor
+    # width = unet.config.sample_size * vae_scale_factor
+    height = HEIGHT
+    width = WIDTH
     guidance_scale = 7.5
 
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
@@ -195,20 +219,28 @@ def run_inference():
             dtype,
         )
 
+        conditioning_frames_latents = encode_conditioning_frames(
+            vae, conditioning_frames, dtype
+        )
+
+        # TODO: careful that the last frame should be the noisy frame
+        latents = torch.cat([conditioning_frames_latents, latents], dim=0)
+
         # 7. Denoising loop
-        for i, t in tqdm(enumerate(timesteps), total=num_inference_steps):
+        for _, t in tqdm(enumerate(timesteps), total=num_inference_steps):
             # expand the latents if we are doing classifier free guidance
+            latents = latents.view(1, -1, 30, 40)
             latent_model_input = (
                 torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             )
             latent_model_input = noise_scheduler.scale_model_input(
                 latent_model_input, t
             )
-
+            
             action_hidden_states = action_embedding(
                 torch.tensor([[1, 1]]).to(device)
             ).repeat(2, 1, 1)
-
+            
             noise_pred = unet(
                 latent_model_input,
                 t,
@@ -223,13 +255,19 @@ def run_inference():
                 noise_pred = noise_pred_uncond + guidance_scale * (
                     noise_pred_text - noise_pred_uncond
                 )
-            # TODO: this is still buggy
-            latents = noise_scheduler.step(
-                noise_pred, t, latents, generator=None, return_dict=False
+            # TODO: here, we gotta step the scheduler only on the last frame, and recover the conditioning frames afterwards
+            reshaped_frames = latents.reshape(10, 4, 30, 40)
+            last_frame = reshaped_frames[-1]
+            denoised_last_frame = noise_scheduler.step(
+                noise_pred, t, last_frame, generator=None, return_dict=False
             )[0]
+            reshaped_frames[-1] = denoised_last_frame
+            latents = reshaped_frames.reshape(1, -1, 30, 40)
+
+    last_frame_latent = latents.reshape(10, 4, 30, 40)[-1].unsqueeze(0)
 
     image = vae.decode(
-        latents / vae.config.scaling_factor, return_dict=False, generator=generator
+        last_frame_latent / vae.config.scaling_factor, return_dict=False, generator=generator
     )[0]
 
     image = image_processor.postprocess(
