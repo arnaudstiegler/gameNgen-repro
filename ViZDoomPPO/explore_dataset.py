@@ -1,4 +1,3 @@
-import pickle
 import matplotlib.pyplot as plt
 import base64
 import io
