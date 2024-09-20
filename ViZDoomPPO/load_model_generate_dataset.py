@@ -540,7 +540,7 @@ def parse_arguments():
     parser.add_argument("--output", choices=["gif", "parquet"], required=True, help="Output format")
     parser.add_argument("--episodes", type=int, default=1, help="Number of episodes to run")
     parser.add_argument("--upload", action="store_true", help="Upload the output to Hugging Face Hub")
-    parser.add_argument("--hf_token", help="Hugging Face API token")
+    parser.add_argument("--hf_token", help="Hugging Face API token (optional if HF_TOKEN env variable is set)")
     parser.add_argument("--hf_repo", help="Hugging Face repository name")
     return parser.parse_args()
 
@@ -600,18 +600,23 @@ if __name__ == "__main__":
         make_gif(agent2, output_file, num_episodes=args.episodes)
     else:
         output_dir = "./dataset"
-        # make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes)
-        # Zip the dataset directory
+        make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes)
+        
         parquet_path="./dataset.parquet"
-        # concatenate_pkls_to_parquet(output_dir, parquet_path)
+        concatenate_pkls_to_parquet(output_dir, parquet_path)
+        
 
     if args.upload:
-        if not args.hf_token or not args.hf_repo:
-            print("Error: --hf_token and --hf_repo are required for uploading to Hugging Face Hub")
+        if not args.hf_repo:
+            print("Error: --hf_repo is required for uploading to Hugging Face Hub")
         else:
-            if args.output == "gif":
-                upload_to_hf(output_file, args.hf_repo, args.hf_token)
+            # Use the provided token or fall back to the environment variable
+            hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+            if not hf_token:
+                print("Error: Hugging Face token is required. Provide it via --hf_token or set the HF_TOKEN environment variable.")
             else:
-                # Upload the zipped file
-                upload_to_hf(parquet_path, args.hf_repo, args.hf_token)
+                if args.output == "gif":
+                    upload_to_hf(output_file, args.hf_repo, hf_token)
+                else:
+                    upload_to_hf(parquet_path, args.hf_repo, hf_token)
     
