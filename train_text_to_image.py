@@ -19,7 +19,6 @@ import argparse
 import logging
 import math
 import os
-import shutil
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -32,14 +31,10 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
-from peft import LoraConfig
-from peft.utils import get_peft_model_state_dict
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, CLIPTokenizer
 from safetensors.torch import save_file
 
 import diffusers
@@ -47,13 +42,14 @@ from sd3.model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils import (
-    check_min_version,
-    convert_state_dict_to_diffusers,
     is_wandb_available,
 )
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
+from PIL import Image
+import base64
+import io
 
 from config_sd import REPO_NAME
 
@@ -62,7 +58,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.31.0.dev0")
+# check_min_version("0.31.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -561,9 +557,25 @@ def main():
     #     )
     #     # See more about loading custom images at
     #     # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+    from datasets import load_dataset, DatasetDict
     dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    
+    # Create a train-test split
+    dataset = dataset["train"].train_test_split(test_size=0.2)
 
-    action_dim = max(dataset["test"][0]["actions"])
+    # Create a train-test split
+    train_test_dataset = dataset["train"].train_test_split(test_size=0.1, seed=42)
+
+    # Create a new DatasetDict with train and test splits
+    dataset = DatasetDict({
+        "train": train_test_dataset["train"],
+        "test": train_test_dataset["test"]
+    })
+
+    action_dim = max(max(actions) for actions in dataset['train']['actions'])
+
+
+  
 
     unet, vae, action_embedding, noise_scheduler = get_model(action_dim)
 
@@ -708,13 +720,14 @@ def main():
         model = accelerator.unwrap_model(model)
         model = model._orig_mod if is_compiled_module(model) else model
         return model
-
+    
     def preprocess_train(examples):
         transform = transforms.ToTensor()
         # TODO: might need some changes here
         images = []
         for image_list in examples["images"]:
             current_images = []
+            image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
             for image in image_list:
                 current_images.append(transform(image.convert("RGB")))
             images.append(current_images)
@@ -884,7 +897,6 @@ def main():
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
-
     for _ in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
@@ -955,7 +967,6 @@ def main():
                     raise ValueError(
                         f"Unknown prediction type {noise_scheduler.config.prediction_type}"
                     )
-                import ipdb; ipdb.set_trace()
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     concatenated_latents,
@@ -1009,68 +1020,40 @@ def main():
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
-
-                if global_step % args.checkpointing_steps == 0:
+                #Generate an eval image every 25 steps
+                if(global_step % 25 == 0):
+                    unet.eval()
                     if accelerator.is_main_process:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [
-                                d for d in checkpoints if d.startswith("checkpoint")
-                            ]
-                            checkpoints = sorted(
-                                checkpoints, key=lambda x: int(x.split("-")[1])
+                        # Use the current batch for inference
+                        from run_inference import run_inference_with_params
+                        with torch.no_grad():
+                            generated_image = run_inference_with_params(
+                                unet=accelerator.unwrap_model(unet),
+                                vae=vae,
+                                noise_scheduler=noise_scheduler,
+                                action_embedding=action_embedding,
+                                batch=batch,
+                                device=accelerator.device,
+                                num_inference_steps=50
                             )
+                        
+                        # Log the generated image
+                        if args.report_to == "wandb":
+                            import wandb
+                            wandb.log({"validation_image": wandb.Image(generated_image)}, step=global_step)
+                        
+                        # Save the generated image
+                        generated_image.save(f"{args.output_dir}/validation_image_step_{global_step}.png")
+                    unet.train()
 
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = (
-                                    len(checkpoints) - args.checkpoints_total_limit + 1
-                                )
-                                removing_checkpoints = checkpoints[0:num_to_remove]
-
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(
-                                    f"removing checkpoints: {', '.join(removing_checkpoints)}"
-                                )
-
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(
-                                        args.output_dir, removing_checkpoint
-                                    )
-                                    shutil.rmtree(removing_checkpoint)
-
-                        save_path = os.path.join(
-                            args.output_dir, f"checkpoint-{global_step}"
-                        )
-                        # TODO: might wanna bring back
-                        # accelerator.save_state(save_path)
-
-                        # unwrapped_unet = unwrap_model(unet)
-                        # unet_lora_state_dict = convert_state_dict_to_diffusers(
-                        #     get_peft_model_state_dict(unwrapped_unet)
-                        # )
-
-                        # StableDiffusionPipeline.save_lora_weights(
-                        #     save_directory=save_path,
-                        #     unet_lora_layers=unet_lora_state_dict,
-                        #     safe_serialization=True,
-                        # )
-
-                        logger.info(f"Saved state to {save_path}")
-
-            logs = {
-                "step_loss": loss.detach().item(),
-                "lr": lr_scheduler.get_last_lr()[0],
-            }
+            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
                 break
 
         # TODO: uncomment
+        
         # if accelerator.is_main_process:
         #     if epoch % args.validation_epochs == 0:
         #         # create pipeline
@@ -1088,7 +1071,20 @@ def main():
 
     # Save the model
     accelerator.wait_for_everyone()
+    
     if accelerator.is_main_process:
+        unet.save_pretrained(os.path.join(args.output_dir, "unet"))
+        vae.save_pretrained(os.path.join(args.output_dir, "vae"))
+        noise_scheduler.save_pretrained(os.path.join(args.output_dir, "scheduler"))
+        torch.save(action_embedding.state_dict(), os.path.join(args.output_dir, "action_embedding.pth"))
+        
+        # Save embedding dimensions
+        embedding_info = {
+            "num_embeddings": action_embedding.num_embeddings,
+            "embedding_dim": action_embedding.embedding_dim
+        }
+        
+        torch.save(embedding_info, os.path.join(args.output_dir, "embedding_info.pth"))
         unet = unet.to(torch.float32)
 
         # unwrapped_unet = unwrap_model(unet)
