@@ -885,6 +885,7 @@ def main():
     else:
         initial_global_step = 0
 
+    import wandb
     run = wandb.init()
     progress_bar = tqdm(
         range(0, args.max_train_steps),
