@@ -570,7 +570,6 @@ def main():
         "train": train_test_dataset["train"],
         "test": train_test_dataset["test"]
     })
-    import ipdb; ipdb.set_trace()
 
     action_dim = max(max(actions) for actions in dataset['train']['actions'])
 
@@ -740,6 +739,9 @@ def main():
             )
         # Set the training transforms
         train_dataset = dataset["test"].with_transform(preprocess_train)
+
+        # Select only the first sample to overfit on it
+        train_dataset = train_dataset.select(range(1))
 
     def collate_fn(examples):
         # Function to create a black screen tensor
