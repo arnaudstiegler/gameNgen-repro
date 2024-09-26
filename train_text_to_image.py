@@ -650,7 +650,7 @@ def main():
         optimizer_cls = torch.optim.AdamW
 
     optimizer = optimizer_cls(
-        unet.parameters(),
+        list(unet.parameters()) + list(action_embedding.parameters()),  # Add action_embedding parameters,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -755,14 +755,14 @@ def main():
             from config_sd import BUFFER_SIZE
 
             # Pad or truncate to 10 images
-            padded_images = example["images"][:BUFFER_SIZE]
+            # padded_images = example["images"][:BUFFER_SIZE]
 
             # TODO: confirm this is correct
-            while len(padded_images) < BUFFER_SIZE:
-                padded_images.append(create_black_screen(height, width))
+            # while len(padded_images) < BUFFER_SIZE:
+            #     padded_images.append(create_black_screen(height, width))
 
             # Stack the 10 images for this example
-            processed_images.append(torch.stack(padded_images))
+            processed_images.append(torch.stack(example["images"]))
 
         # Stack all examples
         # images has shape: (batch_size, frame_buffer, 3, height, width)
@@ -771,7 +771,7 @@ def main():
         return {
             "images": images,
             "actions": torch.tensor(
-                [example["actions"][:BUFFER_SIZE] for example in examples]
+                [example["actions"] for example in examples]
             ),
         }
 
@@ -812,8 +812,8 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, optimizer, train_dataloader, lr_scheduler
+    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
