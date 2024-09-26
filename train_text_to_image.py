@@ -885,6 +885,7 @@ def main():
     else:
         initial_global_step = 0
 
+    run = wandb.init()
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -998,7 +999,7 @@ def main():
 
                 # Log the loss
                 if accelerator.is_main_process and args.report_to == "wandb":
-                    wandb.log({"train_loss": loss.item()}, step=global_step)
+                    run.log({"train_loss": loss.item()}, step=global_step)
 
                 # Gather the losses across all pro`cesses for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
