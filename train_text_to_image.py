@@ -1047,13 +1047,13 @@ def main():
                         generated_image.save(f"{args.output_dir}/validation_image_step_{global_step}.png")
                     unet.train()
 
-                if global_step % args.logging_steps == 0:
-                    if accelerator.is_main_process:
-                        wandb.log({
-                            "global_step": global_step,
-                            "learning_rate": lr_scheduler.get_last_lr()[0],
-                            "epoch": epoch,
-                        })
+                # if global_step % args.logging_steps == 0:
+                #     if accelerator.is_main_process:
+                #         wandb.log({
+                #             "global_step": global_step,
+                #             "learning_rate": lr_scheduler.get_last_lr()[0],
+                #             "epoch": epoch,
+                #         })
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
