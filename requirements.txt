@@ -16,3 +16,4 @@ pydantic
 ruff
 safetensors
 ipywidgets
+torchvision
