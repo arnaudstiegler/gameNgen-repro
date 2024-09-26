@@ -52,10 +52,7 @@ import base64
 import io
 
 from config_sd import REPO_NAME
-
-
-if is_wandb_available():
-    import wandb
+import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -1000,10 +997,10 @@ def main():
                     loss = loss.mean()
 
                 # Log the loss
-                if accelerator.is_main_process:
+                if accelerator.is_main_process and args.report_to == "wandb":
                     wandb.log({"train_loss": loss.item()}, step=global_step)
 
-                # Gather the losses across all processes for logging (if we use distributed training).
+                # Gather the losses across all pro`cesses for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
