@@ -379,7 +379,7 @@ def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batc
         image = (image / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
         image = (image * 255).round().astype("uint8")
-        image = [Image.fromarray(img) for img in image]
+        image = [Image.fromarray(img).convert("RGB") for img in image]
 
     return image[0]  # Return the first (and only) image
 # if __name__ == "__main__":
