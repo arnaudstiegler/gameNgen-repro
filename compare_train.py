@@ -645,7 +645,7 @@ def main():
                 captions.append(caption)
             elif isinstance(caption, (list, np.ndarray)):
                 # take a random caption if there are multiple
-                captions.append(random.choice(caption) if is_train else caption[0])
+                captions.append(caption[0])
             else:
                 raise ValueError(
                     f"Caption column `{caption_column}` should contain either strings or lists of strings."
@@ -659,8 +659,8 @@ def main():
     train_transforms = transforms.Compose(
         [
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
-            transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
+            transforms.CenterCrop(args.resolution),
+            # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ]
@@ -671,16 +671,22 @@ def main():
         model = model._orig_mod if is_compiled_module(model) else model
         return model
 
+    import io
+    import base64
+    from PIL import Image
+
     def preprocess_train(examples):
-        import io
-        import base64
-        from PIL import Image
         images = []
-        for image_list in examples["images"]:
+        for i, image_list in enumerate(examples["images"]):
             image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
+            
+            # Save the first image of the first example as a PNG
+            if i == 0:
+                image_list[0].save("first_image.png")
+            
             images.append(train_transforms(image_list[0]))
         
-        return {"pixel_values": images, "input_ids": [tokenizer.encode("hello", return_tensors="pt") for _ in images]}
+        return {"pixel_values": images, "input_ids": [tokenizer.encode("doom image", return_tensors="pt") for _ in images]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
