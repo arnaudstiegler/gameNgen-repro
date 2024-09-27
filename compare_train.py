@@ -503,7 +503,7 @@ def main():
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
     )
     # freeze parameters of models to save more memory
-    unet.requires_grad_(False)
+    unet.requires_grad_(True)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
 
@@ -516,23 +516,25 @@ def main():
         weight_dtype = torch.bfloat16
 
     # Freeze the unet parameters before adding adapters
-    for param in unet.parameters():
-        param.requires_grad_(False)
+    # for param in unet.parameters():
+    #     param.requires_grad_(False)
 
-    unet_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank,
-        init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
+    # unet_lora_config = LoraConfig(
+    #     r=args.rank,
+    #     lora_alpha=args.rank,
+    #     init_lora_weights="gaussian",
+    #     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    # )
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
 
+    # import ipdb; ipdb.set_trace()
+
     # Add adapter and make sure the trainable params are in float32.
-    unet.add_adapter(unet_lora_config)
+    # unet.add_adapter(unet_lora_config)
     if args.mixed_precision == "fp16":
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(unet, dtype=torch.float32)
@@ -579,7 +581,7 @@ def main():
         optimizer_cls = torch.optim.AdamW
 
     optimizer = optimizer_cls(
-        lora_layers,
+        unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -677,7 +679,8 @@ def main():
         for image_list in examples["images"]:
             image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
             images.append(train_transforms(image_list[0]))
-        return {"pixel_values": images, "input_ids": torch.tensor([[123]])}
+        
+        return {"pixel_values": images, "input_ids": [tokenizer.encode("hello", return_tensors="pt") for _ in images]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
@@ -898,16 +901,16 @@ def main():
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
 
-                        unwrapped_unet = unwrap_model(unet)
-                        unet_lora_state_dict = convert_state_dict_to_diffusers(
-                            get_peft_model_state_dict(unwrapped_unet)
-                        )
+                        # unwrapped_unet = unwrap_model(unet)
+                        # unet_lora_state_dict = convert_state_dict_to_diffusers(
+                        #     get_peft_model_state_dict(unwrapped_unet)
+                        # )
 
-                        StableDiffusionPipeline.save_lora_weights(
-                            save_directory=save_path,
-                            unet_lora_layers=unet_lora_state_dict,
-                            safe_serialization=True,
-                        )
+                        # StableDiffusionPipeline.save_lora_weights(
+                        #     save_directory=save_path,
+                        #     unet_lora_layers=unet_lora_state_dict,
+                        #     safe_serialization=True,
+                        # )
 
                         logger.info(f"Saved state to {save_path}")
 
@@ -922,7 +925,7 @@ def main():
                 # create pipeline
                 pipeline = DiffusionPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
-                    unet=unwrap_model(unet),
+                    unet=unet,
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,
