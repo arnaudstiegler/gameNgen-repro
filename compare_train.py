@@ -620,15 +620,15 @@ def main():
     if args.image_column is None:
         image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
     else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-            )
+        image_column = 'images'
+        # if image_column not in column_names:
+        #     raise ValueError(
+        #         f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
+        #     )
     if args.caption_column is None:
         caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
     else:
-        caption_column = args.caption_column
+        caption_column = 'actions'
         if caption_column not in column_names:
             raise ValueError(
                 f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
@@ -670,16 +670,20 @@ def main():
         return model
 
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
-        examples["pixel_values"] = [train_transforms(image) for image in images]
-        examples["input_ids"] = tokenize_captions(examples)
-        return examples
+        import io
+        import base64
+        from PIL import Image
+        images = []
+        for image_list in examples["images"]:
+            image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
+            images.append(train_transforms(image_list[0]))
+        return {"pixel_values": images, "input_ids": torch.tensor([[123]])}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
         # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        train_dataset = dataset["train"].select(range(1)).with_transform(preprocess_train)
 
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
