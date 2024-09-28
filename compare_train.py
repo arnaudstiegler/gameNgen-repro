@@ -681,8 +681,8 @@ def main():
             image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
             
             # Save the first image of the first example as a PNG
-            if i == 0:
-                image_list[0].save("first_image.png")
+            # if i == 0:
+            #     image_list[0].save("first_image.png")
             
             images.append(train_transforms(image_list[0]))
         

@@ -36,7 +36,7 @@ from packaging import version
 from torchvision import transforms
 from tqdm.auto import tqdm
 from safetensors.torch import save_file
-
+import wandb
 import diffusers
 from sd3.model import get_model
 from diffusers.optimization import get_scheduler
@@ -457,6 +457,16 @@ def parse_args():
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
+    parser.add_argument(
+        "--skip_action_conditioning",
+        action="store_true",
+        help="Whether or not to use action conditioning.",
+    )
+    parser.add_argument(
+        "--skip_image_conditioning",
+        action="store_true",
+        help="Whether or not to use action conditioning.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -649,13 +659,22 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    optimizer = optimizer_cls(
-        list(unet.parameters()) + list(action_embedding.parameters()),  # Add action_embedding parameters,
+    if args.skip_action_conditioning:
+        optimizer = optimizer_cls(
+        list(unet.parameters()),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
-    )
+        )
+    else:
+        optimizer = optimizer_cls(
+            list(unet.parameters()) + list(action_embedding.parameters()),
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+        weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
@@ -698,21 +717,21 @@ def main():
     #     )
     #     return inputs.input_ids
 
-    # TODO: should add the noise here, but probably not the rest
+    # TODO: should add the normalize here, but probably not the rest
     train_transforms = transforms.Compose(
         [
             # transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             # transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
             # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]), #TODO this
+            transforms.Normalize([0.5], [0.5]), #TODO this might be useful to keep
         ]
     )
 
-    def unwrap_model(model):
-        model = accelerator.unwrap_model(model)
-        model = model._orig_mod if is_compiled_module(model) else model
-        return model
+    # def unwrap_model(model):
+    #     model = accelerator.unwrap_model(model)
+    #     model = model._orig_mod if is_compiled_module(model) else model
+    #     return model
     
     def preprocess_train(examples):
         # TODO: might need some changes here
@@ -885,7 +904,7 @@ def main():
     else:
         initial_global_step = 0
 
-    import wandb
+    
     run = wandb.init()
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -905,47 +924,70 @@ def main():
                 # Convert images to latent space
                 bs, buffer_len, channels, height, width = batch["images"].shape
 
-                # Ugly for now, can be parallelize by adding a zero vector everywhere except for the last frame
-                aggregator = []
-                for i in range(buffer_len):
-                    latents = vae.encode(
-                        batch["images"][:, i, :].to(dtype=weight_dtype)
-                    ).latent_dist.sample()
+                # TODO: remove image conditioning
+                if args.skip_image_conditioning:
+                    latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
 
-                    if i == buffer_len - 1:
-                        # Sample noise that we'll add to the latents
-                        noise = torch.randn_like(latents)
-                        if args.noise_offset:
-                            # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                            noise += args.noise_offset * torch.randn(
-                                (latents.shape[0], latents.shape[1], 1, 1),
+                    # Sample noise that we'll add to the latents
+                    noise = torch.randn_like(latents)
+                    if args.noise_offset:
+                        # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                        noise += args.noise_offset * torch.randn(
+                            (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
+                        )
+
+                    bsz = latents.shape[0]
+                    # Sample a random timestep for each image
+                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+                    timesteps = timesteps.long()
+
+                    # Add noise to the latents according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                    # Just to keep the same var as with the image conditioning
+                    concatenated_latents = noisy_latents
+                else:
+                    aggregator = []
+                    for i in range(buffer_len):
+                        latents = vae.encode(
+                            batch["images"][:, i, :].to(dtype=weight_dtype)
+                        ).latent_dist.sample()
+                        latents = latents * vae.config.scaling_factor
+
+                        if i == buffer_len - 1:
+                            # Sample noise that we'll add to the latents
+                            noise = torch.randn_like(latents)
+                            if args.noise_offset:
+                                # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                                noise += args.noise_offset * torch.randn(
+                                    (latents.shape[0], latents.shape[1], 1, 1),
+                                    device=latents.device,
+                                )
+
+                            bsz = latents.shape[0]
+                            # Sample a random timestep for each image
+                            timesteps = torch.randint(
+                                0,
+                                noise_scheduler.config.num_train_timesteps,
+                                (bsz,),
                                 device=latents.device,
                             )
+                            timesteps = timesteps.long()
 
-                        bsz = latents.shape[0]
-                        # Sample a random timestep for each image
-                        timesteps = torch.randint(
-                            0,
-                            noise_scheduler.config.num_train_timesteps,
-                            (bsz,),
-                            device=latents.device,
-                        )
-                        timesteps = timesteps.long()
+                            # Add noise to the latents according to the noise magnitude at each timestep
+                            # (this is the forward diffusion process)
+                            # TODO: this noise should prob. only be added to the last frame?
+                            noisy_latents = noise_scheduler.add_noise(
+                                latents, noise, timesteps
+                            )
 
-                        # Add noise to the latents according to the noise magnitude at each timestep
-                        # (this is the forward diffusion process)
-                        # TODO: this noise should prob. only be added to the last frame?
-                        noisy_latents = noise_scheduler.add_noise(
-                            latents, noise, timesteps
-                        )
+                            aggregator.append(noisy_latents)
+                        else:
+                            aggregator.append(latents)
 
-                        aggregator.append(noisy_latents)
-                    else:
-                        aggregator.append(latents)
-
-                # Here we basically concatenate previous frames to the last noisy frame
-                concatenated_latents = torch.concat(aggregator, dim=1)
+                    # Here we basically concatenate previous frames to the last noisy frame
+                    concatenated_latents = torch.concat(aggregator, dim=1)
                 # Get the text embedding for conditioning
                 # encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
@@ -965,12 +1007,20 @@ def main():
                         f"Unknown prediction type {noise_scheduler.config.prediction_type}"
                     )
                 # Predict the noise residual and compute loss
-                model_pred = unet(
+                if args.skip_action_conditioning:
+                    model_pred = unet(
                     concatenated_latents,
                     timesteps,
-                    encoder_hidden_states=action_hidden_states,
+                    encoder_hidden_states=None,
                     return_dict=False,
-                )[0]
+                    )[0]
+                else:
+                    model_pred = unet(
+                        concatenated_latents,
+                        timesteps,
+                        encoder_hidden_states=action_hidden_states,
+                        return_dict=False,
+                    )[0]
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(
@@ -1035,7 +1085,9 @@ def main():
                                 action_embedding=action_embedding,
                                 batch=batch,
                                 device=accelerator.device,
-                                num_inference_steps=50
+                                num_inference_steps=50,
+                                skip_image_conditioning=args.skip_image_conditioning,
+                                skip_action_conditioning=args.skip_action_conditioning,
                             )
                         
                         # Log the generated image

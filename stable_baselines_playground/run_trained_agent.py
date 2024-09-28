@@ -20,6 +20,8 @@ For DefendTheLine scenario:
 
 EPISODE_LENGTH = 100
 
+from datasets import Dataset, Features, Image, Value, Sequence
+
 
 def generate_hf_parquet_dataset(entries: Dict[str, Any]):
     features = Features(

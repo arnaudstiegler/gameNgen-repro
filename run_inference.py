@@ -317,7 +317,7 @@ def parse_args():
     )
     return parser.parse_args()
 
-def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batch, device, num_inference_steps=50):
+def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batch, device, num_inference_steps=50, skip_image_conditioning=False, skip_action_conditioning=False):
     with torch.no_grad():
         # Prepare inputs
         images = batch["images"]
@@ -325,22 +325,28 @@ def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batc
         
         # Reshape and encode conditioning frames
         batch_size, buffer_size, channels, height, width = images.shape
-        conditioning_frames = images[:, :BUFFER_SIZE-1].reshape(-1, channels, height, width)
-        conditioning_frames_latents = vae.encode(conditioning_frames.to(device)).latent_dist.sample()
-        conditioning_frames_latents = conditioning_frames_latents * vae.config.scaling_factor
-        
-        # Reshape conditioning_frames_latents back to include batch and buffer dimensions
-        _, latent_channels, latent_height, latent_width = conditioning_frames_latents.shape
-        conditioning_frames_latents = conditioning_frames_latents.reshape(
-            batch_size, BUFFER_SIZE-1, latent_channels, latent_height, latent_width
-        )
+
+        if skip_image_conditioning:
+            conditioning_frames = None
+        else:
+            conditioning_frames = images[:, :BUFFER_SIZE-1].reshape(-1, channels, height, width)
+
+            conditioning_frames_latents = vae.encode(conditioning_frames.to(device)).latent_dist.sample()
+            conditioning_frames_latents = conditioning_frames_latents * vae.config.scaling_factor
+            
+            # Reshape conditioning_frames_latents back to include batch and buffer dimensions
+            _, latent_channels, latent_height, latent_width = conditioning_frames_latents.shape
+            conditioning_frames_latents = conditioning_frames_latents.reshape(
+                batch_size, BUFFER_SIZE-1, latent_channels, latent_height, latent_width
+            )
 
         # Generate initial noise for the last frame
         latents = torch.randn((batch_size, latent_channels, latent_height, latent_width), device=device)
         latents = latents * noise_scheduler.init_noise_sigma
 
-        # Concatenate conditioning frames with the noisy last frame
-        latents = torch.cat([conditioning_frames_latents, latents.unsqueeze(1)], dim=1)
+        if not skip_image_conditioning:
+            # Concatenate conditioning frames with the noisy last frame
+            latents = torch.cat([conditioning_frames_latents, latents.unsqueeze(1)], dim=1)
 
         # Prepare timesteps
         noise_scheduler.set_timesteps(num_inference_steps, device=device)
@@ -351,16 +357,24 @@ def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batc
             latents = latents.view(batch_size, -1, latent_height, latent_width)
             latent_model_input = noise_scheduler.scale_model_input(latents, t)
             
-            # Prepare action embeddings
-            action_hidden_states = action_embedding(actions.to(device))
+            if not skip_action_conditioning:    
+                # Prepare action embeddings
+                action_hidden_states = action_embedding(actions.to(device))
 
-            # Predict noise
-            noise_pred = unet(
-                latent_model_input,
-                t,
-                encoder_hidden_states=action_hidden_states,
-                return_dict=False,
-            )[0]
+                # Predict noise
+                noise_pred = unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=action_hidden_states,
+                    return_dict=False,
+                )[0]
+            else:
+                noise_pred = unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=None,
+                    return_dict=False,
+                )[0]
 
             # Perform denoising step on the last frame only
             reshaped_frames = latents.reshape(batch_size, BUFFER_SIZE, latent_channels, latent_height, latent_width)
