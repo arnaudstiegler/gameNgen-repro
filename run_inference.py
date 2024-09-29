@@ -317,18 +317,23 @@ def parse_args():
     )
     return parser.parse_args()
 
-def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batch, device, num_inference_steps=50, skip_image_conditioning=False, skip_action_conditioning=False):
+def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, tokenizer, text_encoder, batch, device, num_inference_steps=50, skip_image_conditioning=False, skip_action_conditioning=False):
     with torch.no_grad():
         # Prepare inputs
         images = batch["images"]
         actions = batch["actions"]
         
-        # Reshape and encode conditioning frames
-        batch_size, buffer_size, channels, height, width = images.shape
-
         if skip_image_conditioning:
             conditioning_frames = None
+            batch_size, channels, height, width = images.shape
+            # temp fix
+            _, latent_channels, latent_height, latent_width = images.shape
+            latent_channels = 4
+            latent_height = 64
+            latent_width = 64
         else:
+            # Reshape and encode conditioning frames
+            batch_size, buffer_size, channels, height, width = images.shape
             conditioning_frames = images[:, :BUFFER_SIZE-1].reshape(-1, channels, height, width)
 
             conditioning_frames_latents = vae.encode(conditioning_frames.to(device)).latent_dist.sample()
@@ -368,25 +373,27 @@ def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, batc
                     encoder_hidden_states=action_hidden_states,
                     return_dict=False,
                 )[0]
+                # Perform denoising step on the last frame only
+                reshaped_frames = latents.reshape(batch_size, BUFFER_SIZE, latent_channels, latent_height, latent_width)
+                last_frame = reshaped_frames[:, -1]
+                denoised_last_frame = noise_scheduler.step(
+                    noise_pred, t, last_frame, return_dict=False
+                )[0]
+                reshaped_frames[:, -1] = denoised_last_frame
+                latents = reshaped_frames.reshape(batch_size, -1, latent_height, latent_width)
+                
             else:
                 noise_pred = unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=None,
+                    encoder_hidden_states=text_encoder(tokenizer.encode(["doom image, high quality, 4k"], return_tensors="pt").to(device))[0],
                     return_dict=False,
                 )[0]
-
-            # Perform denoising step on the last frame only
-            reshaped_frames = latents.reshape(batch_size, BUFFER_SIZE, latent_channels, latent_height, latent_width)
-            last_frame = reshaped_frames[:, -1]
-            denoised_last_frame = noise_scheduler.step(
-                noise_pred, t, last_frame, return_dict=False
-            )[0]
-            reshaped_frames[:, -1] = denoised_last_frame
-            latents = reshaped_frames.reshape(batch_size, -1, latent_height, latent_width)
+                last_frame_latent = noise_scheduler.step(
+                    noise_pred, t, latents, return_dict=False
+                )[0]
 
         # Decode the last frame
-        last_frame_latent = latents.reshape(batch_size, BUFFER_SIZE, latent_channels, latent_height, latent_width)[:, -1]
         image = vae.decode(last_frame_latent / vae.config.scaling_factor, return_dict=False)[0]
 
         # Post-process the image

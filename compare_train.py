@@ -686,14 +686,14 @@ def main():
             
             images.append(train_transforms(image_list[0]))
         
-        return {"pixel_values": images, "input_ids": [tokenizer.encode("doom image", return_tensors="pt") for _ in images]}
+        return {"pixel_values": images, "input_ids": [tokenizer.encode("doom image, high quality, 4k, high resolution", return_tensors="pt") for _ in images]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
         # Set the training transforms
-        # train_dataset = dataset["train"].select(range(1)).with_transform(preprocess_train)
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        train_dataset = dataset["train"].select(range(1)).with_transform(preprocess_train)
+        # train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
@@ -936,6 +936,7 @@ def main():
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,
+                    safety_checker=None
                 )
                 images = log_validation(pipeline, args, accelerator, epoch)
 

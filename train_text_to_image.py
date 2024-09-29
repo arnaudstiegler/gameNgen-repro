@@ -492,6 +492,10 @@ def main():
             " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
+    if args.report_to == "wandb":
+        import wandb
+        run = wandb.init()
+
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(
@@ -580,7 +584,7 @@ def main():
 
     action_dim = max(max(actions) for actions in dataset['train']['actions'])
 
-    unet, vae, action_embedding, noise_scheduler = get_model(action_dim)
+    unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(action_dim, skip_image_conditioning=args.skip_image_conditioning)
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -605,7 +609,7 @@ def main():
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     action_embedding.to(accelerator.device, dtype=weight_dtype)
-    # text_encoder.to(accelerator.device, dtype=weight_dtype)
+    text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # Add adapter and make sure the trainable params are in float32.
     # unet.add_adapter(unet_lora_config)
@@ -720,7 +724,7 @@ def main():
     # TODO: should add the normalize here, but probably not the rest
     train_transforms = transforms.Compose(
         [
-            # transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             # transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
             # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
@@ -748,45 +752,45 @@ def main():
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             # TODO: split
-            dataset["test"] = (
-                dataset["test"]
+            dataset["train"] = (
+                dataset["train"]
                 .shuffle(seed=args.seed)
                 .select(range(args.max_train_samples))
             )
         # Set the training transforms
-        train_dataset = dataset["test"].with_transform(preprocess_train)
+        # train_dataset = dataset["test"].with_transform(preprocess_train)
 
         # Select only the first sample to overfit on it
-        train_dataset = train_dataset.select(range(1))
+        train_dataset = dataset["train"].select(range(1)).with_transform(preprocess_train)
 
     def collate_fn(examples):
         # Function to create a black screen tensor
         def create_black_screen(height, width):
             return torch.zeros(3, height, width, dtype=torch.float32)
 
-        # Assume all images have the same dimensions
-        sample_image = examples[0]["images"][0]
-        height, width = sample_image.shape[1], sample_image.shape[2]
+        if not args.skip_image_conditioning:    
+            # Process each example
+            processed_images = []
+            for example in examples:
+                from config_sd import BUFFER_SIZE
 
-        # Process each example
-        processed_images = []
-        for example in examples:
-            from config_sd import BUFFER_SIZE
+                # Pad or truncate to 10 images
+                # padded_images = example["images"][:BUFFER_SIZE]
 
-            # Pad or truncate to 10 images
-            # padded_images = example["images"][:BUFFER_SIZE]
+                # TODO: confirm this is correct
+                # while len(padded_images) < BUFFER_SIZE:
+                #     padded_images.append(create_black_screen(height, width))
 
-            # TODO: confirm this is correct
-            # while len(padded_images) < BUFFER_SIZE:
-            #     padded_images.append(create_black_screen(height, width))
+                # Stack the 10 images for this example
+                processed_images.append(torch.stack(example["images"]))
 
-            # Stack the 10 images for this example
-            processed_images.append(torch.stack(example["images"]))
-
-        # Stack all examples
-        # images has shape: (batch_size, frame_buffer, 3, height, width)
-        images = torch.stack(processed_images)
-        images = images.to(memory_format=torch.contiguous_format).float()
+            # Stack all examples
+            # images has shape: (batch_size, frame_buffer, 3, height, width)
+            images = torch.stack(processed_images)
+            images = images.to(memory_format=torch.contiguous_format).float()
+        else:
+            images = torch.stack([example["images"][0] for example in examples])
+            images = images.to(memory_format=torch.contiguous_format).float()
         return {
             "images": images,
             "actions": torch.tensor(
@@ -831,8 +835,8 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        optimizer, train_dataloader, lr_scheduler
+    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -905,7 +909,6 @@ def main():
         initial_global_step = 0
 
     
-    run = wandb.init()
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -921,8 +924,7 @@ def main():
                 # Embed the actions first
                 action_hidden_states = action_embedding(batch["actions"])
 
-                # Convert images to latent space
-                bs, buffer_len, channels, height, width = batch["images"].shape
+                
 
                 # TODO: remove image conditioning
                 if args.skip_image_conditioning:
@@ -948,6 +950,8 @@ def main():
                     # Just to keep the same var as with the image conditioning
                     concatenated_latents = noisy_latents
                 else:
+                    # Convert images to latent space
+                    bs, buffer_len, channels, height, width = batch["images"].shape
                     aggregator = []
                     for i in range(buffer_len):
                         latents = vae.encode(
@@ -1009,10 +1013,10 @@ def main():
                 # Predict the noise residual and compute loss
                 if args.skip_action_conditioning:
                     model_pred = unet(
-                    concatenated_latents,
-                    timesteps,
-                    encoder_hidden_states=None,
-                    return_dict=False,
+                        concatenated_latents,
+                        timesteps,
+                        encoder_hidden_states=text_encoder(tokenizer.encode(["doom image, high quality, 4k"], return_tensors="pt").to(accelerator.device))[0],
+                        return_dict=False,
                     )[0]
                 else:
                     model_pred = unet(
@@ -1072,32 +1076,35 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
                 #Generate an eval image every 25 steps
-                if(global_step % 25 == 0):
+                if(global_step % 250 == 0):
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
                         from run_inference import run_inference_with_params
-                        with torch.no_grad():
-                            generated_image = run_inference_with_params(
+                        for _ in range(4):
+                            with torch.no_grad():
+                                generated_image = run_inference_with_params(
                                 unet=accelerator.unwrap_model(unet),
                                 vae=vae,
                                 noise_scheduler=noise_scheduler,
                                 action_embedding=action_embedding,
+                                tokenizer=tokenizer,
+                                text_encoder=text_encoder,
                                 batch=batch,
                                 device=accelerator.device,
                                 num_inference_steps=50,
                                 skip_image_conditioning=args.skip_image_conditioning,
-                                skip_action_conditioning=args.skip_action_conditioning,
-                            )
+                                    skip_action_conditioning=args.skip_action_conditioning,
+                                )
                         
-                        # Log the generated image
-                        if args.report_to == "wandb":
-                            import wandb
-                            wandb.log({"validation_image": wandb.Image(generated_image)}, step=global_step)
-                        
-                        # Save the generated image
-                        generated_image.save(f"{args.output_dir}/validation_image_step_{global_step}.png")
-                    unet.train()
+                            # Log the generated image
+                            if args.report_to == "wandb":
+                                import wandb
+                                wandb.log({"validation_image": wandb.Image(generated_image)}, step=global_step)
+                            
+                            # Save the generated image
+                            generated_image.save(f"{args.output_dir}/validation_image_step_{global_step}.png")
+                        unet.train()
 
                 # if global_step % args.logging_steps == 0:
                 #     if accelerator.is_main_process:
