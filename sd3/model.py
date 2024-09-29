@@ -35,7 +35,7 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
         """
         old_conv_in = unet.conv_in
         new_conv_in = torch.nn.Conv2d(
-            40, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
+            4 * BUFFER_SIZE, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
         )
 
         # Initialize the new conv layer with the weights from the old one
@@ -51,4 +51,5 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     unet.requires_grad_(True)
     # TODO: unfreeze
     vae.requires_grad_(False)
+    text_encoder.requires_grad_(False)
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder

@@ -317,11 +317,11 @@ def parse_args():
     )
     return parser.parse_args()
 
-def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, tokenizer, text_encoder, batch, device, num_inference_steps=50, skip_image_conditioning=False, skip_action_conditioning=False):
+def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, tokenizer, text_encoder, batch, device, num_inference_steps=30, skip_image_conditioning=False, skip_action_conditioning=False):
     with torch.no_grad():
-        # Prepare inputs
-        images = batch["images"]
-        actions = batch["actions"]
+        # TODO: shold not query keys directly
+        images = batch["pixel_values"]
+        actions = batch["input_ids"]
         
         if skip_image_conditioning:
             conditioning_frames = None
@@ -358,7 +358,7 @@ def run_inference_with_params(unet, vae, noise_scheduler, action_embedding, toke
         timesteps = noise_scheduler.timesteps
 
         # Denoising loop
-        for _, t in tqdm(enumerate(timesteps), total=num_inference_steps):
+        for _, t in enumerate(timesteps):
             latents = latents.view(batch_size, -1, latent_height, latent_width)
             latent_model_input = noise_scheduler.scale_model_input(latents, t)
             

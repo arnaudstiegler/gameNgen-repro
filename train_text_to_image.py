@@ -479,6 +479,7 @@ def parse_args():
 
     return args
 
+
 DATASET_NAME_MAPPING = {
     "lambdalabs/naruto-blip-captions": ("image", "text"),
 }
@@ -498,9 +499,7 @@ def main():
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
-    accelerator_project_config = ProjectConfiguration(
-        project_dir=args.output_dir, logging_dir=logging_dir
-    )
+    accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -632,7 +631,7 @@ def main():
                 "xformers is not available. Make sure it is installed correctly"
             )
 
-    # lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
+    trainable_params = filter(lambda p: p.requires_grad, unet.parameters())
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -644,10 +643,7 @@ def main():
 
     if args.scale_lr:
         args.learning_rate = (
-            args.learning_rate
-            * args.gradient_accumulation_steps
-            * args.train_batch_size
-            * accelerator.num_processes
+            args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -665,7 +661,7 @@ def main():
 
     if args.skip_action_conditioning:
         optimizer = optimizer_cls(
-        list(unet.parameters()),
+        unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -725,10 +721,10 @@ def main():
     train_transforms = transforms.Compose(
         [
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            # transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
+            transforms.CenterCrop(args.resolution),
             # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]), #TODO this might be useful to keep
+            transforms.Normalize([0.5], [0.5]),
         ]
     )
 
@@ -744,19 +740,14 @@ def main():
             current_images = []
             image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
             for image in image_list:
-                current_images.append(train_transforms(image.convert("RGB")))
+                # TODO: convert to RGB? Should already be
+                current_images.append(train_transforms(image))
             images.append(current_images)
-        examples["images"] = images
-        return examples
+        return {"pixel_values": images, "input_ids": [tokenizer.encode("doom image, high quality, 4k, high resolution", return_tensors="pt") for _ in images]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            # TODO: split
-            dataset["train"] = (
-                dataset["train"]
-                .shuffle(seed=args.seed)
-                .select(range(args.max_train_samples))
-            )
+            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
         # Set the training transforms
         # train_dataset = dataset["test"].with_transform(preprocess_train)
 
@@ -782,20 +773,18 @@ def main():
                 #     padded_images.append(create_black_screen(height, width))
 
                 # Stack the 10 images for this example
-                processed_images.append(torch.stack(example["images"]))
+                processed_images.append(torch.stack(example["pixel_values"]))
 
             # Stack all examples
             # images has shape: (batch_size, frame_buffer, 3, height, width)
             images = torch.stack(processed_images)
             images = images.to(memory_format=torch.contiguous_format).float()
         else:
-            images = torch.stack([example["images"][0] for example in examples])
+            images = torch.stack([example["pixel_values"][0] for example in examples])
             images = images.to(memory_format=torch.contiguous_format).float()
         return {
-            "images": images,
-            "actions": torch.tensor(
-                [example["actions"] for example in examples]
-            ),
+            "pixel_values": images,
+            "input_ids": torch.stack([example["input_ids"] for example in examples]),
         }
 
     # DataLoaders creation:
@@ -811,21 +800,13 @@ def main():
     # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
     num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
     if args.max_train_steps is None:
-        len_train_dataloader_after_sharding = math.ceil(
-            len(train_dataloader) / accelerator.num_processes
-        )
-        num_update_steps_per_epoch = math.ceil(
-            len_train_dataloader_after_sharding / args.gradient_accumulation_steps
-        )
+        len_train_dataloader_after_sharding = math.ceil(len(train_dataloader) / accelerator.num_processes)
+        num_update_steps_per_epoch = math.ceil(len_train_dataloader_after_sharding / args.gradient_accumulation_steps)
         num_training_steps_for_scheduler = (
-            args.num_train_epochs
-            * num_update_steps_per_epoch
-            * accelerator.num_processes
+            args.num_train_epochs * num_update_steps_per_epoch * accelerator.num_processes
         )
     else:
-        num_training_steps_for_scheduler = (
-            args.max_train_steps * accelerator.num_processes
-        )
+        num_training_steps_for_scheduler = args.max_train_steps * accelerator.num_processes
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
@@ -840,15 +821,10 @@ def main():
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(
-        len(train_dataloader) / args.gradient_accumulation_steps
-    )
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        if (
-            num_training_steps_for_scheduler
-            != args.max_train_steps * accelerator.num_processes
-        ):
+        if num_training_steps_for_scheduler != args.max_train_steps * accelerator.num_processes:
             logger.warning(
                 f"The length of the 'train_dataloader' after 'accelerator.prepare' ({len(train_dataloader)}) does not match "
                 f"the expected length ({len_train_dataloader_after_sharding}) when the learning rate scheduler was created. "
@@ -863,19 +839,13 @@ def main():
         accelerator.init_trackers("text2image-fine-tune", config=vars(args))
 
     # Train!
-    total_batch_size = (
-        args.train_batch_size
-        * accelerator.num_processes
-        * args.gradient_accumulation_steps
-    )
+    total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
-    logger.info(
-        f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
-    )
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     global_step = 0
@@ -908,7 +878,6 @@ def main():
     else:
         initial_global_step = 0
 
-    
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -916,19 +885,15 @@ def main():
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
+
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
-                # Embed the actions first
-                action_hidden_states = action_embedding(batch["actions"])
-
-                
-
                 # TODO: remove image conditioning
                 if args.skip_image_conditioning:
-                    latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
+                    latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
 
                     # Sample noise that we'll add to the latents
@@ -951,11 +916,11 @@ def main():
                     concatenated_latents = noisy_latents
                 else:
                     # Convert images to latent space
-                    bs, buffer_len, channels, height, width = batch["images"].shape
+                    bs, buffer_len, channels, height, width = batch["pixel_values"].shape
                     aggregator = []
                     for i in range(buffer_len):
                         latents = vae.encode(
-                            batch["images"][:, i, :].to(dtype=weight_dtype)
+                            batch["pixel_values"][:, i, :].to(dtype=weight_dtype)
                         ).latent_dist.sample()
                         latents = latents * vae.config.scaling_factor
 
@@ -993,63 +958,56 @@ def main():
                     # Here we basically concatenate previous frames to the last noisy frame
                     concatenated_latents = torch.concat(aggregator, dim=1)
                 # Get the text embedding for conditioning
-                # encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
+                if args.skip_action_conditioning:
+                    encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
+                else:
+                    encoder_hidden_states = action_embedding(batch["input_ids"])
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
                     # set prediction_type of scheduler if defined
-                    noise_scheduler.register_to_config(
-                        prediction_type=args.prediction_type
-                    )
+                    noise_scheduler.register_to_config(prediction_type=args.prediction_type)
 
                 if noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
                 elif noise_scheduler.config.prediction_type == "v_prediction":
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
-                    raise ValueError(
-                        f"Unknown prediction type {noise_scheduler.config.prediction_type}"
-                    )
+                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
                 # Predict the noise residual and compute loss
                 if args.skip_action_conditioning:
                     model_pred = unet(
                         concatenated_latents,
                         timesteps,
-                        encoder_hidden_states=text_encoder(tokenizer.encode(["doom image, high quality, 4k"], return_tensors="pt").to(accelerator.device))[0],
+                        encoder_hidden_states=encoder_hidden_states,
                         return_dict=False,
                     )[0]
                 else:
                     model_pred = unet(
                         concatenated_latents,
                         timesteps,
-                        encoder_hidden_states=action_hidden_states,
+                        encoder_hidden_states=encoder_hidden_states,
                         return_dict=False,
                     )[0]
 
                 if args.snr_gamma is None:
-                    loss = F.mse_loss(
-                        model_pred.float(), target.float(), reduction="mean"
-                    )
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
                 else:
                     # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
                     # Since we predict the noise instead of x_0, the original formulation is slightly changed.
                     # This is discussed in Section 4.2 of the same paper.
                     snr = compute_snr(noise_scheduler, timesteps)
-                    mse_loss_weights = torch.stack(
-                        [snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1
-                    ).min(dim=1)[0]
+                    mse_loss_weights = torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(
+                        dim=1
+                    )[0]
                     if noise_scheduler.config.prediction_type == "epsilon":
                         mse_loss_weights = mse_loss_weights / snr
                     elif noise_scheduler.config.prediction_type == "v_prediction":
                         mse_loss_weights = mse_loss_weights / (snr + 1)
 
-                    loss = F.mse_loss(
-                        model_pred.float(), target.float(), reduction="none"
-                    )
-                    loss = (
-                        loss.mean(dim=list(range(1, len(loss.shape))))
-                        * mse_loss_weights
-                    )
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+                    loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
                     loss = loss.mean()
 
                 # Log the loss
@@ -1063,7 +1021,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = unet.parameters()
+                    params_to_clip = trainable_params
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1077,6 +1035,7 @@ def main():
                 train_loss = 0.0
                 #Generate an eval image every 25 steps
                 if(global_step % 250 == 0):
+                    print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
@@ -1099,7 +1058,6 @@ def main():
                         
                             # Log the generated image
                             if args.report_to == "wandb":
-                                import wandb
                                 wandb.log({"validation_image": wandb.Image(generated_image)}, step=global_step)
                             
                             # Save the generated image
@@ -1208,7 +1166,8 @@ def main():
 
     # At the end of your script
     if accelerator.is_main_process:
-        wandb.finish()
+        if args.report_to == "wandb":
+            wandb.finish()
 
 
 if __name__ == "__main__":
