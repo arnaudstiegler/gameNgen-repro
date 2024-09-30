@@ -53,6 +53,7 @@ import io
 
 from config_sd import REPO_NAME
 import wandb
+from run_inference import run_inference_with_params
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -1039,8 +1040,8 @@ def main():
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
-                        from run_inference import run_inference_with_params
-                        for _ in range(4):
+                        validation_images = []
+                        for _ in range(2):
                             with torch.no_grad():
                                 generated_image = run_inference_with_params(
                                 unet=accelerator.unwrap_model(unet),
@@ -1053,24 +1054,14 @@ def main():
                                 device=accelerator.device,
                                 num_inference_steps=50,
                                 skip_image_conditioning=args.skip_image_conditioning,
-                                    skip_action_conditioning=args.skip_action_conditioning,
+                                skip_action_conditioning=args.skip_action_conditioning,
                                 )
-                        
-                            # Log the generated image
-                            if args.report_to == "wandb":
-                                wandb.log({"validation_image": wandb.Image(generated_image)}, step=global_step)
-                            
-                            # Save the generated image
-                            generated_image.save(f"{args.output_dir}/validation_image_step_{global_step}.png")
+                            validation_images.append(generated_image)
+
+                        if args.report_to == "wandb":
+                            wandb.log({"validation_images": [wandb.Image(img) for img in validation_images]}, step=global_step)
                         unet.train()
 
-                # if global_step % args.logging_steps == 0:
-                #     if accelerator.is_main_process:
-                #         wandb.log({
-                #             "global_step": global_step,
-                #             "learning_rate": lr_scheduler.get_last_lr()[0],
-                #             "epoch": epoch,
-                #         })
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
