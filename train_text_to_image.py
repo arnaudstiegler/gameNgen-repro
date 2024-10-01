@@ -753,7 +753,7 @@ def main():
         # train_dataset = dataset["test"].with_transform(preprocess_train)
 
         # Select only the first sample to overfit on it
-        train_dataset = dataset["train"].select(range(1)).with_transform(preprocess_train)
+        train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
         # Function to create a black screen tensor
@@ -1035,26 +1035,32 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
                 #Generate an eval image every 25 steps
-                if(global_step % 250 == 0):
+                
+                if(global_step % args.validation_epochs == 0):
                     print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
                         validation_images = []
-                        for _ in range(2):
+                        for i in range(2):  # Generate 2 images
+                            # Select a single item from the batch
+                            single_item = {
+                                "pixel_values": batch["pixel_values"][i],
+                                "input_ids": batch["input_ids"][i]
+                            }
                             with torch.no_grad():
                                 generated_image = run_inference_with_params(
-                                unet=accelerator.unwrap_model(unet),
-                                vae=vae,
-                                noise_scheduler=noise_scheduler,
-                                action_embedding=action_embedding,
-                                tokenizer=tokenizer,
-                                text_encoder=text_encoder,
-                                batch=batch,
-                                device=accelerator.device,
-                                num_inference_steps=50,
-                                skip_image_conditioning=args.skip_image_conditioning,
-                                skip_action_conditioning=args.skip_action_conditioning,
+                                    unet=accelerator.unwrap_model(unet),
+                                    vae=vae,
+                                    noise_scheduler=noise_scheduler,
+                                    action_embedding=action_embedding,
+                                    tokenizer=tokenizer,
+                                    text_encoder=text_encoder,
+                                    batch=single_item,  # Pass the single item
+                                    device=accelerator.device,
+                                    num_inference_steps=50,
+                                    skip_image_conditioning=args.skip_image_conditioning,
+                                    skip_action_conditioning=args.skip_action_conditioning,
                                 )
                             validation_images.append(generated_image)
 

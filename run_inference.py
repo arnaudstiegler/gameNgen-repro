@@ -157,18 +157,17 @@ def run_inference_with_params(
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
     with torch.no_grad():
-        # TODO: shold not query keys directly
-        images = batch["pixel_values"]
-        actions = batch["input_ids"]
-
+        # Modify these lines to work with a single item
+        images = batch["pixel_values"].unsqueeze(0)  # Add batch dimension
+        actions = batch["input_ids"].unsqueeze(0)  # Add batch dimension
         if skip_image_conditioning:
             conditioning_frames = None
             batch_size, channels, height, width = images.shape
-            # temp fix
-            _, latent_channels, latent_height, latent_width = images.shape
-            latent_channels = 4
-            latent_height = 64
-            latent_width = 64
+            #TODO: batched inference, stop hardcoding dimensions
+            batch_size=1
+            latent_channels=4
+            latent_height=64
+            latent_width=64
         else:
             # Reshape and encode conditioning frames
             batch_size, buffer_size, channels, height, width = images.shape
@@ -293,32 +292,32 @@ def run_inference_with_params(
     return image[0]
 
 
-if __name__ == "__main__":
-    device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
-    batch = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")["test"][0]
-    unet = (
-        UNet2DConditionModel.from_pretrained(args.output_dir, subfolder="unet")
-        .eval()
-        .to(device)
-    )
-    vae = (
-        AutoencoderKL.from_pretrained(args.output_dir, subfolder="vae")
-        .eval()
-        .to(device)
-    )
-    noise_scheduler = DDIMScheduler.from_pretrained(
-        args.output_dir, subfolder="scheduler"
-    )
+# if __name__ == "__main__":
+#     device = torch.device(
+#         "cuda"
+#         if torch.cuda.is_available()
+#         else "mps"
+#         if torch.backends.mps.is_available()
+#         else "cpu"
+#     )
+#     batch = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")["test"][0]
+#     unet = (
+#         UNet2DConditionModel.from_pretrained(args.output_dir, subfolder="unet")
+#         .eval()
+#         .to(device)
+#     )
+#     vae = (
+#         AutoencoderKL.from_pretrained(args.output_dir, subfolder="vae")
+#         .eval()
+#         .to(device)
+#     )
+#     noise_scheduler = DDIMScheduler.from_pretrained(
+#         args.output_dir, subfolder="scheduler"
+#     )
 
-    action_embedding = read_action_embedding_from_safetensors(
-        os.path.join(args.output_dir, "action_embedding_model.safetensors")
-    )
+#     action_embedding = read_action_embedding_from_safetensors(
+#         os.path.join(args.output_dir, "action_embedding_model.safetensors")
+#     )
 
     # TODO: bring back
     # run_inference_with_params(
