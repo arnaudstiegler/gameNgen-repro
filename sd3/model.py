@@ -33,9 +33,10 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
         """
         This is to accomodate concatenating previous frames in the channels dimension
         """
+        new_in_channels = 4 * (BUFFER_SIZE + 1)
         old_conv_in = unet.conv_in
         new_conv_in = torch.nn.Conv2d(
-            4 * BUFFER_SIZE, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
+           new_in_channels, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
         )
 
         # Initialize the new conv layer with the weights from the old one
@@ -46,7 +47,8 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
 
         # Replace the conv_in layer
         unet.conv_in = new_conv_in
-        unet.config["in_channels"] = 4 * BUFFER_SIZE
+        # Have to account for BUFFER SIZE conditioning frames + 1 for the noise
+        unet.config["in_channels"] = new_in_channels
 
     unet.requires_grad_(True)
     # TODO: unfreeze

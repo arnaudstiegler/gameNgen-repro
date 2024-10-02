@@ -201,7 +201,7 @@ def run_inference_with_params(
         latents = latents * noise_scheduler.init_noise_sigma
 
         if not skip_image_conditioning:
-            # Concatenate conditioning frames with the noisy last frame
+            # TODO: gotta figure out whether we want this before or after the conditioning frames
             latents = torch.cat(
                 [conditioning_frames_latents, latents.unsqueeze(1)], dim=1
             )

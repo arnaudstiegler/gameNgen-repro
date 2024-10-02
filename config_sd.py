@@ -1,5 +1,5 @@
 # Number of past frames/actions we provide
-BUFFER_SIZE = 10
+BUFFER_SIZE = 2
 
 HEIGHT = 240
 WIDTH = 320

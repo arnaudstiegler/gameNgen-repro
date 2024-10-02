@@ -51,7 +51,7 @@ from PIL import Image
 import base64
 import io
 
-from config_sd import REPO_NAME
+from config_sd import REPO_NAME, BUFFER_SIZE
 import wandb
 from run_inference import run_inference_with_params
 
@@ -764,17 +764,9 @@ def main():
             # Process each example
             processed_images = []
             for example in examples:
-                from config_sd import BUFFER_SIZE
-
-                # Pad or truncate to 10 images
-                # padded_images = example["images"][:BUFFER_SIZE]
-
-                # TODO: confirm this is correct
-                # while len(padded_images) < BUFFER_SIZE:
-                #     padded_images.append(create_black_screen(height, width))
-
-                # Stack the 10 images for this example
-                processed_images.append(torch.stack(example["pixel_values"]))
+                
+                # This means you have BUFFER_SIZE conditioning frames + 1 target frame
+                processed_images.append(torch.stack(example["pixel_values"][:BUFFER_SIZE+1]))
 
             # Stack all examples
             # images has shape: (batch_size, frame_buffer, 3, height, width)
@@ -916,48 +908,33 @@ def main():
                     # Just to keep the same var as with the image conditioning
                     concatenated_latents = noisy_latents
                 else:
-                    # Convert images to latent space
                     bs, buffer_len, channels, height, width = batch["pixel_values"].shape
-                    aggregator = []
-                    for i in range(buffer_len):
-                        latents = vae.encode(
-                            batch["pixel_values"][:, i, :].to(dtype=weight_dtype)
-                        ).latent_dist.sample()
-                        latents = latents * vae.config.scaling_factor
 
-                        if i == buffer_len - 1:
-                            # Sample noise that we'll add to the latents
-                            noise = torch.randn_like(latents)
-                            if args.noise_offset:
-                                # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                                noise += args.noise_offset * torch.randn(
-                                    (latents.shape[0], latents.shape[1], 1, 1),
-                                    device=latents.device,
-                                )
+                    # Fold buffer len in to batch for encoding in one go
+                    batch["pixel_values"] = batch["pixel_values"].view(bs * buffer_len, channels, height, width)
+                    latents = vae.encode(
+                        batch["pixel_values"].to(dtype=weight_dtype)
+                    ).latent_dist.sample()
+                    latents = latents * vae.config.scaling_factor
+                    
+                    _, latent_channels, latent_height, latent_width = latents.shape
+                    # Separate back the conditioning frames
+                    latents = latents.view(bs, buffer_len, latent_channels, latent_height, latent_width)
+                    noise = torch.randn((bs, latent_channels, latent_height, latent_width), device=latents.device)
 
-                            bsz = latents.shape[0]
-                            # Sample a random timestep for each image
-                            timesteps = torch.randint(
-                                0,
-                                noise_scheduler.config.num_train_timesteps,
-                                (bsz,),
-                                device=latents.device,
-                            )
-                            timesteps = timesteps.long()
+                    if args.noise_offset:
+                        # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                        noise += args.noise_offset * torch.randn(
+                            (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
+                        )
+                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bs,), device=latents.device)
+                    timesteps = timesteps.long()
 
-                            # Add noise to the latents according to the noise magnitude at each timestep
-                            # (this is the forward diffusion process)
-                            # TODO: this noise should prob. only be added to the last frame?
-                            noisy_latents = noise_scheduler.add_noise(
-                                latents, noise, timesteps
-                            )
-
-                            aggregator.append(noisy_latents)
-                        else:
-                            aggregator.append(latents)
-
-                    # Here we basically concatenate previous frames to the last noisy frame
-                    concatenated_latents = torch.concat(aggregator, dim=1)
+                    # Add noise to the latents according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                    # We collapse the frame conditioning into the channel dimension
+                    concatenated_latents = noisy_latents.view(bs, buffer_len * latent_channels, latent_height, latent_width)
                 # Get the text embedding for conditioning
                 if args.skip_action_conditioning:
                     encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
@@ -977,20 +954,12 @@ def main():
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # Predict the noise residual and compute loss
-                if args.skip_action_conditioning:
-                    model_pred = unet(
-                        concatenated_latents,
-                        timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        return_dict=False,
-                    )[0]
-                else:
-                    model_pred = unet(
-                        concatenated_latents,
-                        timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        return_dict=False,
-                    )[0]
+                model_pred = unet(
+                    concatenated_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    return_dict=False,
+                )[0]
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
