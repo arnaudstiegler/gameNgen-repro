@@ -138,7 +138,6 @@ def get_latents(
     latents = latents * noise_scheduler.init_noise_sigma
     return latents
 
-
 def run_inference_with_params(
     unet,
     vae,
@@ -154,142 +153,104 @@ def run_inference_with_params(
     skip_image_conditioning=False,
     skip_action_conditioning=False,
 ):
+    bsize=batch["pixel_values"].shape[0]//(BUFFER_SIZE+1)
+    
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
+    print("Bsize, buffer size:", bsize, BUFFER_SIZE)
+    print("Received batch:", batch["pixel_values"].shape)
+    #Batch here is the folded buffer len and batch size, e.g. [bsize*buffer_len,4,64,64]. 
+    #this gets the first item in batch, and returns item with shape [buffer_len,4,64,64]
+    batch["pixel_values"] = batch["pixel_values"].view(bsize, BUFFER_SIZE+1, 3, 512, 512)[0]
+    
+    print("Batch after squeeze:", batch["pixel_values"].shape)
     with torch.no_grad():
-        # Modify these lines to work with a single item
-        images = batch["pixel_values"].unsqueeze(0)  # Add batch dimension
-        actions = batch["input_ids"].unsqueeze(0)  # Add batch dimension
         if skip_image_conditioning:
-            conditioning_frames = None
-            batch_size, channels, height, width = images.shape
-            #TODO: batched inference, stop hardcoding dimensions
-            batch_size=1
-            latent_channels=4
-            latent_height=64
-            latent_width=64
+            latents = torch.randn(
+                (1, 4, 64, 64),
+                device=device,
+            )
         else:
-            # Reshape and encode conditioning frames
-            batch_size, buffer_size, channels, height, width = images.shape
-            conditioning_frames = images[:, : BUFFER_SIZE - 1].reshape(
-                -1, channels, height, width
-            )
+            # Process conditioning frames
+            # TODO: Verify these are the right conditioning frames and it's not the last frame
+            conditioning_frames = batch["pixel_values"][:BUFFER_SIZE,:,:,:]
+            print("Conditioning frames:", conditioning_frames.shape)
+            conditioning_latents = vae.encode(conditioning_frames.to(device)).latent_dist.sample()
+            print("Conditioning latents:", conditioning_latents.shape)
+            conditioning_latents = conditioning_latents * vae.config.scaling_factor
 
-            conditioning_frames_latents = vae.encode(
-                conditioning_frames.to(device)
-            ).latent_dist.sample()
-            conditioning_frames_latents = (
-                conditioning_frames_latents * vae.config.scaling_factor
+            
+            # Generate initial noise for the last frame
+            latents = torch.randn(
+                (1, 4, conditioning_latents.shape[2], conditioning_latents.shape[3]),
+                device=device,
             )
+            print("noise latents shape:", latents.shape)
 
-            # Reshape conditioning_frames_latents back to include batch and buffer dimensions
-            _, latent_channels, latent_height, latent_width = (
-                conditioning_frames_latents.shape
-            )
-            conditioning_frames_latents = conditioning_frames_latents.reshape(
-                batch_size,
-                BUFFER_SIZE - 1,
-                latent_channels,
-                latent_height,
-                latent_width,
-            )
-
-        # Generate initial noise for the last frame
-        latents = torch.randn(
-            (batch_size, latent_channels, latent_height, latent_width), device=device
-        )
-        latents = latents * noise_scheduler.init_noise_sigma
-
-        if not skip_image_conditioning:
-            # TODO: gotta figure out whether we want this before or after the conditioning frames
-            latents = torch.cat(
-                [conditioning_frames_latents, latents.unsqueeze(1)], dim=1
-            )
+            
+            # Concatenate conditioning latents with the noisy last frame
+            latents = torch.cat([conditioning_latents, latents], dim=0)
+            print("latents shape after cat:", latents.shape)
 
         # Prepare timesteps
         noise_scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = noise_scheduler.timesteps
 
-        if not skip_action_conditioning:
-            if do_classifier_free_guidance:
-                # Not sure what to do for the negative prompt in that case
-                encoder_hidden_states = action_embedding(actions.to(device))
-            else:
-                encoder_hidden_states = action_embedding(actions.to(device))
+        # Get the text embedding for conditioning
+        if skip_action_conditioning:
+            encoder_hidden_states = text_encoder(batch["input_ids"].to(device), return_dict=False)[0]
         else:
-            if do_classifier_free_guidance:
-                encoder_hidden_states = text_encoder(torch.stack([tokenizer.encode(["doom image, high quality, 4k, high resolution"], return_tensors="pt"), tokenizer.encode(["low quality, low poly, low resolution"], return_tensors="pt")]).to(device))[0]
-            else:
-                encoder_hidden_states = text_encoder(tokenizer.encode(["doom image, high quality, 4k, high resolution"], return_tensors="pt").to(device))[0]
-
-
-        latents = latents.view(1, -1, latent_height, latent_width)
-
+            encoder_hidden_states = action_embedding(batch["input_ids"].to(device))
+        
         # Denoising loop
-        for _, t in enumerate(timesteps):
-            latent_model_input = (
-                torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-            )
+        for t in timesteps:
+            # Expand latents for classifier-free guidance
+            # latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+            latent_model_input = latents
             latent_model_input = noise_scheduler.scale_model_input(latent_model_input, t)
+            print("latent model input shape:", latent_model_input.shape)
+            latent_model_input = latent_model_input.view((BUFFER_SIZE+1) * 4, 64,64).unsqueeze(0)
+            #TODO: I don't know why we need to tile this until the batchsize aligns, but we do
+            latent_model_input = torch.cat([latent_model_input]*4)
+            print("latent model input shape after view:", latent_model_input.shape)
+            # Predict the noise residual
+            noise_pred = unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=encoder_hidden_states,
+                return_dict=False,
+            )[0]
+            # (bsize, buffer_len + 1 * 4 , 64, 64)
+            print("noise pred shape:", noise_pred.shape)
 
-            if not skip_action_conditioning:
-                # Predict noise
-                noise_pred = unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=encoder_hidden_states,
-                    timestep_cond=None,
-                    return_dict=False,
-                )[0]
-                # Perform denoising step on the last frame only
-                reshaped_frames = latents.reshape(
-                    batch_size,
-                    BUFFER_SIZE,
-                    latent_channels,
-                    latent_height,
-                    latent_width,
-                )
-                last_frame = reshaped_frames[:, -1]
-                denoised_last_frame = noise_scheduler.step(
-                    noise_pred, t, last_frame, return_dict=False
-                )[0]
-                reshaped_frames[:, -1] = denoised_last_frame
-                latents = reshaped_frames.reshape(
-                    batch_size, -1, latent_height, latent_width
-                )
-                #TODO: unfinished here
-
+            # Perform guidance
+            # if do_classifier_free_guidance:
+            #     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            #     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            
+            if not skip_image_conditioning:
+                # Only denoise the last frame
+                print("latents shape before denoise:", noise_pred.shape)
+                print("latent model input", latent_model_input.shape)
+                latent_model_input = latent_model_input.view(1, 4, 64, 64)
+                denoised_latents = noise_scheduler.step(noise_pred, t, latent_model_input).prev_sample
+                latent_model_input[:, -1] = denoised_latents
             else:
-                noise_pred = unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=encoder_hidden_states,
-                    timestep_cond=None,
-                    return_dict=False,
-                )[0]
-
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (
-                        noise_pred_text - noise_pred_uncond
-                    )
-
-                latents = noise_scheduler.step(
-                    noise_pred, t, latents, generator=None, return_dict=False
-                )[0]
+                # Denoise the entire latent
+                latent_model_input = noise_scheduler.step(noise_pred, t, latent_model_input).prev_sample
 
         # Decode the last frame
-        image = vae.decode(
-            latents / vae.config.scaling_factor, return_dict=False
-        )[0]
+        if not skip_image_conditioning:
+            image_latents = latent_model_input[:, -1]
+        else:
+            image_latents = latent_model_input
+
+        image = vae.decode(image_latents / vae.config.scaling_factor, return_dict=False)[0]
 
         # Post-process the image
-        image = image_processor.postprocess(
-            image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
-            )
-        image[0].save(f"./image_steps{t}.png")
+        image = image_processor.postprocess(image, output_type="pil")[0]
 
-    return image[0]
+    return image
 
 
 # if __name__ == "__main__":

@@ -911,21 +911,27 @@ def main():
                     bs, buffer_len, channels, height, width = batch["pixel_values"].shape
 
                     # Fold buffer len in to batch for encoding in one go
+                    print("Batch shape: ", batch["pixel_values"].shape)
                     batch["pixel_values"] = batch["pixel_values"].view(bs * buffer_len, channels, height, width)
+                    
                     latents = vae.encode(
                         batch["pixel_values"].to(dtype=weight_dtype)
                     ).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
+                    print("Latents shape: ", latents.shape)
                     
                     _, latent_channels, latent_height, latent_width = latents.shape
                     # Separate back the conditioning frames
                     latents = latents.view(bs, buffer_len, latent_channels, latent_height, latent_width)
-                    noise = torch.randn((bs, latent_channels, latent_height, latent_width), device=latents.device)
+                    print("Latents shape after view: ", latents.shape)
+                    
+                    # Generate noise with the same shape as latents
+                    noise = torch.randn_like(latents)
 
                     if args.noise_offset:
                         # https://www.crosslabs.org//blog/diffusion-with-offset-noise
                         noise += args.noise_offset * torch.randn(
-                            (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
+                            (latents.shape[0], latents.shape[1], latents.shape[2], 1, 1), device=latents.device
                         )
                     timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bs,), device=latents.device)
                     timesteps = timesteps.long()
@@ -935,6 +941,7 @@ def main():
                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
                     # We collapse the frame conditioning into the channel dimension
                     concatenated_latents = noisy_latents.view(bs, buffer_len * latent_channels, latent_height, latent_width)
+                    
                 # Get the text embedding for conditioning
                 if args.skip_action_conditioning:
                     encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
@@ -952,7 +959,7 @@ def main():
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-
+                print("Concatenated latents shape fed into unet: ", concatenated_latents.shape)
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     concatenated_latents,
@@ -960,9 +967,18 @@ def main():
                     encoder_hidden_states=encoder_hidden_states,
                     return_dict=False,
                 )[0]
+                print("Model pred shape: ", model_pred.shape)
+                print("Target shape: ", target.shape)
+               
+                if not args.skip_image_conditioning:
+                    # Only predict the last frame – empirically verified that it is frame 0 and not frame -1. 
+                    target_last_frame = target[:, 0, :, :, :]
+                    print("Target last frame shape: ", target_last_frame.shape)
+                else:
+                    target_last_frame = target  
 
                 if args.snr_gamma is None:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                    loss = F.mse_loss(model_pred.float(), target_last_frame.float(), reduction="mean")
                 else:
                     # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
                     # Since we predict the noise instead of x_0, the original formulation is slightly changed.
@@ -1012,11 +1028,7 @@ def main():
                         # Use the current batch for inference
                         validation_images = []
                         for i in range(2):  # Generate 2 images
-                            # Select a single item from the batch
-                            single_item = {
-                                "pixel_values": batch["pixel_values"][i],
-                                "input_ids": batch["input_ids"][i]
-                            }
+                            
                             with torch.no_grad():
                                 generated_image = run_inference_with_params(
                                     unet=accelerator.unwrap_model(unet),
@@ -1025,7 +1037,7 @@ def main():
                                     action_embedding=action_embedding,
                                     tokenizer=tokenizer,
                                     text_encoder=text_encoder,
-                                    batch=single_item,  # Pass the single item
+                                    batch=batch,  # Pass the single item
                                     device=accelerator.device,
                                     num_inference_steps=50,
                                     skip_image_conditioning=args.skip_image_conditioning,
