@@ -13,12 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+"""Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
 
 import argparse
 import logging
 import math
 import os
+import random
+import shutil
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -31,29 +33,27 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
+from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
+from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 from torchvision import transforms
 from tqdm.auto import tqdm
-from safetensors.torch import save_file
-import wandb
+from transformers import CLIPTextModel, CLIPTokenizer
+
 import diffusers
-from sd3.model import get_model
+from diffusers import AutoencoderKL, DDPMScheduler, DiffusionPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
-from diffusers.utils import (
-    is_wandb_available,
-)
+from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, is_wandb_available
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
-from PIL import Image
-import base64
-import io
 
-from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH
-import wandb
-from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
+
+if is_wandb_available():
+    import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -109,11 +109,9 @@ def log_validation(
     epoch,
     is_final_validation=False,
 ):
-    """
-    Here, we wanna validate different actions based on the same sample (doesn't really matter for now testing different samples)
-    """
     logger.info(
-        f"Running validation... \n Generating {args.num_validation_images} images"
+        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
+        f" {args.validation_prompt}."
     )
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
@@ -128,11 +126,7 @@ def log_validation(
 
     with autocast_ctx:
         for _ in range(args.num_validation_images):
-            images.append(
-                pipeline(
-                    args.validation_prompt, num_inference_steps=30, generator=generator
-                ).images[0]
-            )
+            images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -143,8 +137,7 @@ def log_validation(
             tracker.log(
                 {
                     phase_name: [
-                        wandb.Image(image, caption=f"{i}")
-                        for i, image in enumerate(images)
+                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}") for i, image in enumerate(images)
                     ]
                 }
             )
@@ -153,6 +146,26 @@ def log_validation(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser.add_argument(
+        "--pretrained_model_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        required=False,
+        help="Revision of pretrained model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
+    )
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -180,10 +193,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--image_column",
-        type=str,
-        default="image",
-        help="The column of the dataset containing an image.",
+        "--image_column", type=str, default="image", help="The column of the dataset containing an image."
     )
     parser.add_argument(
         "--caption_column",
@@ -192,10 +202,7 @@ def parse_args():
         help="The column of the dataset containing a caption or a list of captions.",
     )
     parser.add_argument(
-        "--validation_prompt",
-        type=str,
-        default=VALIDATION_PROMPT,
-        help="A prompt that is sampled during training for inference.",
+        "--validation_prompt", type=str, default=None, help="A prompt that is sampled during training for inference."
     )
     parser.add_argument(
         "--num_validation_images",
@@ -224,7 +231,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="sd-model-finetuned",
+        default="sd-model-finetuned-lora",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -233,13 +240,11 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
-    )
+    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
     parser.add_argument(
         "--resolution",
         type=int,
-        default=HEIGHT,
+        default=512,
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
@@ -260,10 +265,7 @@ def parse_args():
         help="whether to randomly flip images horizontally",
     )
     parser.add_argument(
-        "--train_batch_size",
-        type=int,
-        default=2,
-        help="Batch size (per device) for the training dataloader.",
+        "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
@@ -305,10 +307,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--lr_warmup_steps",
-        type=int,
-        default=500,
-        help="Number of steps for the warmup in the lr scheduler.",
+        "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
         "--snr_gamma",
@@ -318,9 +317,7 @@ def parse_args():
         "More details here: https://arxiv.org/abs/2303.09556.",
     )
     parser.add_argument(
-        "--use_8bit_adam",
-        action="store_true",
-        help="Whether or not to use 8-bit Adam from bitsandbytes.",
+        "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes."
     )
     parser.add_argument(
         "--allow_tf32",
@@ -338,41 +335,13 @@ def parse_args():
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
     )
-    parser.add_argument(
-        "--adam_beta1",
-        type=float,
-        default=0.9,
-        help="The beta1 parameter for the Adam optimizer.",
-    )
-    parser.add_argument(
-        "--adam_beta2",
-        type=float,
-        default=0.999,
-        help="The beta2 parameter for the Adam optimizer.",
-    )
-    parser.add_argument(
-        "--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use."
-    )
-    parser.add_argument(
-        "--adam_epsilon",
-        type=float,
-        default=1e-08,
-        help="Epsilon value for the Adam optimizer",
-    )
-    parser.add_argument(
-        "--max_grad_norm", default=1.0, type=float, help="Max gradient norm."
-    )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_token",
-        type=str,
-        default=None,
-        help="The token to use to push to the Model Hub.",
-    )
+    parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
+    parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
+    parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
+    parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
+    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
+    parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--prediction_type",
         type=str,
@@ -414,12 +383,7 @@ def parse_args():
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
         ),
     )
-    parser.add_argument(
-        "--local_rank",
-        type=int,
-        default=-1,
-        help="For distributed training: local_rank",
-    )
+    parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
@@ -445,28 +409,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--enable_xformers_memory_efficient_attention",
-        action="store_true",
-        help="Whether or not to use xformers.",
+        "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
-    parser.add_argument(
-        "--noise_offset", type=float, default=0, help="The scale of noise offset."
-    )
+    parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
     parser.add_argument(
         "--rank",
         type=int,
         default=4,
         help=("The dimension of the LoRA update matrices."),
-    )
-    parser.add_argument(
-        "--skip_action_conditioning",
-        action="store_true",
-        help="Whether or not to use action conditioning.",
-    )
-    parser.add_argument(
-        "--skip_image_conditioning",
-        action="store_true",
-        help="Whether or not to use action conditioning.",
     )
 
     args = parser.parse_args()
@@ -493,10 +443,6 @@ def main():
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
             " Please use `huggingface-cli login` to authenticate with the Hub."
         )
-
-    if args.report_to == "wandb":
-        import wandb
-        run = wandb.init()
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
@@ -540,51 +486,26 @@ def main():
 
         if args.push_to_hub:
             repo_id = create_repo(
-                repo_id=REPO_NAME, exist_ok=True, token=args.hub_token
+                repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
             ).repo_id
-
-        # Get the datasets: you can either provide your own training and evaluation files (see below)
-    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
-
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
-    # if args.dataset_name is not None:
-    #     # Downloading and loading a dataset from the hub.
-    #     dataset = load_dataset(
-    #         args.dataset_name,
-    #         args.dataset_config_name,
-    #         cache_dir=args.cache_dir,
-    #         data_dir=args.train_data_dir,
-    #     )
-    # else:
-    #     data_files = {}
-    #     if args.train_data_dir is not None:
-    #         data_files["train"] = os.path.join(args.train_data_dir, "**")
-    #     dataset = load_dataset(
-    #         "imagefolder",
-    #         data_files=data_files,
-    #         cache_dir=args.cache_dir,
-    #     )
-    #     # See more about loading custom images at
-    #     # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
-    from datasets import load_dataset, DatasetDict
-    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
-    
-    # Create a train-test split
-    dataset = dataset["train"].train_test_split(test_size=0.2)
-
-    # Create a train-test split
-    train_test_dataset = dataset["train"].train_test_split(test_size=0.1, seed=42)
-
-    # Create a new DatasetDict with train and test splits
-    dataset = DatasetDict({
-        "train": train_test_dataset["train"],
-        "test": train_test_dataset["test"]
-    })
-
-    action_dim = max(max(actions) for actions in dataset['train']['actions'])
-
-    unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(action_dim, skip_image_conditioning=args.skip_image_conditioning)
+    # Load scheduler, tokenizer and models.
+    noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+    tokenizer = CLIPTokenizer.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
+    )
+    text_encoder = CLIPTextModel.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
+    )
+    vae = AutoencoderKL.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
+    )
+    unet = UNet2DConditionModel.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
+    )
+    # freeze parameters of models to save more memory
+    unet.requires_grad_(True)
+    vae.requires_grad_(False)
+    text_encoder.requires_grad_(False)
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -597,7 +518,7 @@ def main():
     # Freeze the unet parameters before adding adapters
     # for param in unet.parameters():
     #     param.requires_grad_(False)
-    # TODO: remove
+
     # unet_lora_config = LoraConfig(
     #     r=args.rank,
     #     lora_alpha=args.rank,
@@ -608,8 +529,9 @@ def main():
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
-    action_embedding.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
+
+    # import ipdb; ipdb.set_trace()
 
     # Add adapter and make sure the trainable params are in float32.
     # unet.add_adapter(unet_lora_config)
@@ -628,11 +550,9 @@ def main():
                 )
             unet.enable_xformers_memory_efficient_attention()
         else:
-            raise ValueError(
-                "xformers is not available. Make sure it is installed correctly"
-            )
+            raise ValueError("xformers is not available. Make sure it is installed correctly")
 
-    trainable_params = filter(lambda p: p.requires_grad, unet.parameters())
+    lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -660,65 +580,82 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    if args.skip_action_conditioning:
-        optimizer = optimizer_cls(
+    optimizer = optimizer_cls(
         unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
+    )
+
+    # Get the datasets: you can either provide your own training and evaluation files (see below)
+    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
+
+    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
+    # download the dataset.
+    if args.dataset_name is not None:
+        # Downloading and loading a dataset from the hub.
+        dataset = load_dataset(
+            args.dataset_name,
+            args.dataset_config_name,
+            cache_dir=args.cache_dir,
+            data_dir=args.train_data_dir,
         )
     else:
-        optimizer = optimizer_cls(
-            list(unet.parameters()) + list(action_embedding.parameters()),
-            lr=args.learning_rate,
-            betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
+        data_files = {}
+        if args.train_data_dir is not None:
+            data_files["train"] = os.path.join(args.train_data_dir, "**")
+        dataset = load_dataset(
+            "imagefolder",
+            data_files=data_files,
+            cache_dir=args.cache_dir,
         )
+        # See more about loading custom images at
+        # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
-    # column_names = dataset["train"].column_names
+    column_names = dataset["train"].column_names
 
     # 6. Get the column names for input/target.
-    # dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
-    # if args.image_column is None:
-    #     image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    # else:
-    #     image_column = args.image_column
-    #     if image_column not in column_names:
-    #         raise ValueError(
-    #             f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-    #         )
-    # if args.caption_column is None:
-    #     caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    # else:
-    #     caption_column = args.caption_column
-    #     if caption_column not in column_names:
-    #         raise ValueError(
-    #             f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
-    #         )
+    dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
+    if args.image_column is None:
+        image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
+    else:
+        image_column = 'images'
+        # if image_column not in column_names:
+        #     raise ValueError(
+        #         f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
+        #     )
+    if args.caption_column is None:
+        caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+    else:
+        caption_column = 'actions'
+        if caption_column not in column_names:
+            raise ValueError(
+                f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
+            )
 
-    # TODO: no need for tokenizing the captions
-    # def tokenize_captions(examples, is_train=True):
-    #     captions = []
-    #     for caption in examples[caption_column]:
-    #         if isinstance(caption, str):
-    #             captions.append(caption)
-    #         elif isinstance(caption, (list, np.ndarray)):
-    #             # take a random caption if there are multiple
-    #             captions.append(random.choice(caption) if is_train else caption[0])
-    #         else:
-    #             raise ValueError(
-    #                 f"Caption column `{caption_column}` should contain either strings or lists of strings."
-    #             )
-    #     inputs = tokenizer(
-    #         captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-    #     )
-    #     return inputs.input_ids
+    # Preprocessing the datasets.
+    # We need to tokenize input captions and transform the images.
+    def tokenize_captions(examples, is_train=True):
+        captions = []
+        for caption in examples[caption_column]:
+            if isinstance(caption, str):
+                captions.append(caption)
+            elif isinstance(caption, (list, np.ndarray)):
+                # take a random caption if there are multiple
+                captions.append(caption[0])
+            else:
+                raise ValueError(
+                    f"Caption column `{caption_column}` should contain either strings or lists of strings."
+                )
+        inputs = tokenizer(
+            captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+        )
+        return inputs.input_ids
 
-    # TODO: should add the normalize here, but probably not the rest
+    # Preprocessing the datasets.
     train_transforms = transforms.Compose(
         [
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -729,53 +666,42 @@ def main():
         ]
     )
 
-    # def unwrap_model(model):
-    #     model = accelerator.unwrap_model(model)
-    #     model = model._orig_mod if is_compiled_module(model) else model
-    #     return model
-    
+    def unwrap_model(model):
+        model = accelerator.unwrap_model(model)
+        model = model._orig_mod if is_compiled_module(model) else model
+        return model
+
+    import io
+    import base64
+    from PIL import Image
+
     def preprocess_train(examples):
-        # TODO: might need some changes here
         images = []
-        for image_list in examples["images"]:
-            current_images = []
-            image_list = [Image.open(io.BytesIO(base64.b64decode(img))).convert("RGB") for img in image_list]
-            for image in image_list:
-                current_images.append(train_transforms(image))
-            images.append(current_images)
-        return {"pixel_values": images, "input_ids": [tokenizer.encode(VALIDATION_PROMPT, return_tensors="pt") for _ in images]}
+        for i, image_list in enumerate(examples["images"]):
+            image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
+            
+            # Save the first image of the first example as a PNG
+            # if i == 0:
+            #     image_list[0].save("first_image.png")
+            
+            images.append(train_transforms(image_list[0]))
+        
+        return {"pixel_values": images, "input_ids": [tokenizer.encode("doom image, high quality, 4k, high resolution", return_tensors="pt") for _ in images]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        # Set the training transforms
+        train_dataset = dataset["train"].select(range(1)).with_transform(preprocess_train)
+        # train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
-        # Function to create a black screen tensor
-        def create_black_screen(height, width):
-            return torch.zeros(3, height, width, dtype=torch.float32)
+        pixel_values = torch.stack([example["pixel_values"] for example in examples])
+        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+        input_ids = torch.stack([example["input_ids"] for example in examples])
+        return {"pixel_values": pixel_values, "input_ids": input_ids}
 
-        if not args.skip_image_conditioning:    
-            # Process each example
-            processed_images = []
-            for example in examples:
-                
-                # This means you have BUFFER_SIZE conditioning frames + 1 target frame
-                processed_images.append(torch.stack(example["pixel_values"][:BUFFER_SIZE+1]))
-
-            # Stack all examples
-            # images has shape: (batch_size, frame_buffer, 3, height, width)
-            images = torch.stack(processed_images)
-            images = images.to(memory_format=torch.contiguous_format).float()
-        else:
-            images = torch.stack([example["pixel_values"][0] for example in examples])
-            images = images.to(memory_format=torch.contiguous_format).float()
-        return {
-            "pixel_values": images,
-            "input_ids": torch.stack([example["input_ids"] for example in examples]),
-        }
-
+    # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
@@ -879,64 +805,29 @@ def main():
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
-                if args.skip_image_conditioning:
-                    latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                    latents = latents * vae.config.scaling_factor
+                # Convert images to latent space
+                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = latents * vae.config.scaling_factor
 
-                    # Sample noise that we'll add to the latents
-                    noise = torch.randn_like(latents)
-                    if args.noise_offset:
-                        # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                        noise += args.noise_offset * torch.randn(
-                            (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
-                        )
+                # Sample noise that we'll add to the latents
+                noise = torch.randn_like(latents)
+                if args.noise_offset:
+                    # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                    noise += args.noise_offset * torch.randn(
+                        (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
+                    )
 
-                    bsz = latents.shape[0]
-                    # Sample a random timestep for each image
-                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-                    timesteps = timesteps.long()
+                bsz = latents.shape[0]
+                # Sample a random timestep for each image
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+                timesteps = timesteps.long()
 
-                    # Add noise to the latents according to the noise magnitude at each timestep
-                    # (this is the forward diffusion process)
-                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-                    # Just to keep the same var as with the image conditioning
-                    concatenated_latents = noisy_latents
-                else:
-                    bs, buffer_len, channels, height, width = batch["pixel_values"].shape
+                # Add noise to the latents according to the noise magnitude at each timestep
+                # (this is the forward diffusion process)
+                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                    # Fold buffer len in to batch for encoding in one go
-                    folded_conditional_images= batch["pixel_values"].view(bs * buffer_len, channels, height, width)
-                    
-                    latents = vae.encode(
-                        folded_conditional_images.to(dtype=weight_dtype)
-                    ).latent_dist.sample()
-                    latents = latents * vae.config.scaling_factor
-                    
-                    _, latent_channels, latent_height, latent_width = latents.shape
-                    # Separate back the conditioning frames
-                    latents = latents.view(bs, buffer_len, latent_channels, latent_height, latent_width)
-                    
-                    # Generate noise with the same shape as latents
-                    noise = torch.zeros_like(latents)
-                    noise[:, -1, :, :, :] = torch.randn_like(latents[:, -1, :, :, :])
-
-                    if args.noise_offset:
-                        # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                        noise[:, -1, :, :, :] = args.noise_offset * torch.randn((latents.shape[0], latents.shape[2], 1, 1), device=latents.device)
-                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bs,), device=latents.device)
-                    timesteps = timesteps.long()
-
-                    # Add noise to the latents according to the noise magnitude at each timestep
-                    # (this is the forward diffusion process)
-                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-                    # We collapse the frame conditioning into the channel dimension
-                    concatenated_latents = noisy_latents.view(bs, buffer_len * latent_channels, latent_height, latent_width)
-                    
                 # Get the text embedding for conditioning
-                if args.skip_action_conditioning:
-                    encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
-                else:
-                    encoder_hidden_states = action_embedding(batch["input_ids"])
+                encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
@@ -951,21 +842,10 @@ def main():
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 # Predict the noise residual and compute loss
-                model_pred = unet(
-                    concatenated_latents,
-                    timesteps,
-                    encoder_hidden_states=encoder_hidden_states,
-                    return_dict=False,
-                )[0]
-
-                if not args.skip_image_conditioning:
-                    # Only predict the last frame – empirically verified that it is frame 0 and not frame -1. 
-                    target_last_frame = target[:, -1, :, :, :]
-                else:
-                    target_last_frame = target
+                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
 
                 if args.snr_gamma is None:
-                    loss = F.mse_loss(model_pred.float(), target_last_frame.float(), reduction="mean")
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
                 else:
                     # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
                     # Since we predict the noise instead of x_0, the original formulation is slightly changed.
@@ -983,18 +863,14 @@ def main():
                     loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
                     loss = loss.mean()
 
-                # Log the loss
-                if accelerator.is_main_process and args.report_to == "wandb":
-                    run.log({"train_loss": loss.item()}, step=global_step)
-
-                # Gather the losses across all pro`cesses for logging (if we use distributed training).
+                # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = trainable_params
+                    params_to_clip = lora_layers
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1006,56 +882,44 @@ def main():
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
-                
-                if(global_step % 250 == 0):
-                    print("Generating validation image")
-                    unet.eval()
+
+                if global_step % args.checkpointing_steps == 0:
                     if accelerator.is_main_process:
-                        # Use the current batch for inference
-                        validation_images = []
-                        for i in range(2):  # Generate 2 images
-                            single_sample_batch = {
-                                    "pixel_values": batch["pixel_values"][0].unsqueeze(0),
-                                    "input_ids": batch["input_ids"][0].unsqueeze(0)
-                                }
-                            with torch.no_grad():
-                                if args.skip_image_conditioning:
-                                    generated_image = run_inference_with_params(
-                                        unet=accelerator.unwrap_model(unet),
-                                        vae=vae,
-                                        noise_scheduler=noise_scheduler,
-                                        action_embedding=action_embedding,
-                                        tokenizer=tokenizer,
-                                        text_encoder=text_encoder,
-                                        batch=single_sample_batch,
-                                        device=accelerator.device,
-                                        num_inference_steps=50,
-                                        do_classifier_free_guidance=True,
-                                        guidance_scale=7.5,
-                                        skip_action_conditioning=args.skip_action_conditioning,
-                                    )
-                                else:
-                                    generated_image = run_inference_img_conditioning_with_params(
-                                        unet=accelerator.unwrap_model(unet),
-                                        vae=vae,
-                                        noise_scheduler=noise_scheduler,
-                                        action_embedding=action_embedding,
-                                        tokenizer=tokenizer,
-                                        text_encoder=text_encoder,
-                                        batch=single_sample_batch,
-                                        device=accelerator.device,
-                                        num_inference_steps=50,
-                                        do_classifier_free_guidance=False,
-                                        # TODO: paper mentions 1.5 but sd usually uses 7.5
-                                        guidance_scale=7.5,
-                                        skip_action_conditioning=args.skip_action_conditioning,
-                                    )
-                            validation_images.append(generated_image)
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        if args.checkpoints_total_limit is not None:
+                            checkpoints = os.listdir(args.output_dir)
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-                        if args.report_to == "wandb":
-                            wandb.log({"validation_images": [wandb.Image(img) for img in validation_images]}, step=global_step)
-                        unet.train()
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                            if len(checkpoints) >= args.checkpoints_total_limit:
+                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                                removing_checkpoints = checkpoints[0:num_to_remove]
 
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint)
+
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path)
+
+                        # unwrapped_unet = unwrap_model(unet)
+                        # unet_lora_state_dict = convert_state_dict_to_diffusers(
+                        #     get_peft_model_state_dict(unwrapped_unet)
+                        # )
+
+                        # StableDiffusionPipeline.save_lora_weights(
+                        #     save_directory=save_path,
+                        #     unet_lora_layers=unet_lora_state_dict,
+                        #     safe_serialization=True,
+                        # )
+
+                        logger.info(f"Saved state to {save_path}")
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1063,79 +927,55 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        # TODO: uncomment
-        
-        # if accelerator.is_main_process:
-        #     if epoch % args.validation_epochs == 0:
-        #         # create pipeline
-        #         pipeline = DiffusionPipeline.from_pretrained(
-        #             args.pretrained_model_name_or_path,
-        #             unet=unwrap_model(unet),
-        #             revision=args.revision,
-        #             variant=args.variant,
-        #             torch_dtype=weight_dtype,
-        #         )
-        #         images = log_validation(pipeline, args, accelerator, epoch)
+        if accelerator.is_main_process:
+            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
+                # create pipeline
+                pipeline = DiffusionPipeline.from_pretrained(
+                    args.pretrained_model_name_or_path,
+                    unet=unet,
+                    revision=args.revision,
+                    variant=args.variant,
+                    torch_dtype=weight_dtype,
+                    safety_checker=None
+                )
+                images = log_validation(pipeline, args, accelerator, epoch)
 
-        #         del pipeline
-        #         torch.cuda.empty_cache()
+                del pipeline
+                torch.cuda.empty_cache()
 
-    # Save the model
+    # Save the lora layers
     accelerator.wait_for_everyone()
-    
     if accelerator.is_main_process:
-        unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-        vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-        noise_scheduler.save_pretrained(os.path.join(args.output_dir, "scheduler"))
-        torch.save(action_embedding.state_dict(), os.path.join(args.output_dir, "action_embedding.pth"))
-        
-        # Save embedding dimensions
-        embedding_info = {
-            "num_embeddings": action_embedding.num_embeddings,
-            "embedding_dim": action_embedding.embedding_dim
-        }
-        
-        torch.save(embedding_info, os.path.join(args.output_dir, "embedding_info.pth"))
         unet = unet.to(torch.float32)
 
-        # unwrapped_unet = unwrap_model(unet)
-        # unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
-        # StableDiffusionPipeline.save_lora_weights(
-        #     save_directory=args.output_dir,
-        #     unet_lora_layers=unet_lora_state_dict,
-        #     safe_serialization=True,
-        # )
+        unwrapped_unet = unwrap_model(unet)
+        unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+        StableDiffusionPipeline.save_lora_weights(
+            save_directory=args.output_dir,
+            unet_lora_layers=unet_lora_state_dict,
+            safe_serialization=True,
+        )
 
         # Final inference
-        # TODO: uncomment once validation works
-        # if True:
-        #     pipeline = DiffusionPipeline.from_pretrained(
-        #         args.pretrained_model_name_or_path,
-        #         revision=args.revision,
-        #         variant=args.variant,
-        #         torch_dtype=weight_dtype,
-        #     )
+        # Load previous pipeline
+        if args.validation_prompt is not None:
+            pipeline = DiffusionPipeline.from_pretrained(
+                args.pretrained_model_name_or_path,
+                revision=args.revision,
+                variant=args.variant,
+                torch_dtype=weight_dtype,
+            )
 
-        #     # load attention processors
-        #     # pipeline.load_lora_weights(args.output_dir)
+            # load attention processors
+            pipeline.load_lora_weights(args.output_dir)
 
-        #     # run inference
-        #     images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
+            # run inference
+            images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
 
         if args.push_to_hub:
-            unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-            vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-            save_file(
-                action_embedding.state_dict(),
-                os.path.join(args.output_dir, "action_embedding_model.safetensors"),
-            )
-            noise_scheduler.save_pretrained(
-                os.path.join(args.output_dir, "noise_scheduler")
-            )
             save_model_card(
                 repo_id,
-                # images=images,
-                images=[],
+                images=images,
                 base_model=args.pretrained_model_name_or_path,
                 dataset_name=args.dataset_name,
                 repo_folder=args.output_dir,
@@ -1148,11 +988,6 @@ def main():
             )
 
     accelerator.end_training()
-
-    # At the end of your script
-    if accelerator.is_main_process:
-        if args.report_to == "wandb":
-            wandb.finish()
 
 
 if __name__ == "__main__":
