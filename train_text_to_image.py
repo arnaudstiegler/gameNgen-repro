@@ -51,9 +51,9 @@ from PIL import Image
 import base64
 import io
 
-from config_sd import REPO_NAME, BUFFER_SIZE
+from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH
 import wandb
-from run_inference import run_inference_with_params
+from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -194,7 +194,7 @@ def parse_args():
     parser.add_argument(
         "--validation_prompt",
         type=str,
-        default=None,
+        default=VALIDATION_PROMPT,
         help="A prompt that is sampled during training for inference.",
     )
     parser.add_argument(
@@ -239,7 +239,7 @@ def parse_args():
     parser.add_argument(
         "--resolution",
         type=int,
-        default=512,
+        default=HEIGHT,
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
@@ -739,20 +739,16 @@ def main():
         images = []
         for image_list in examples["images"]:
             current_images = []
-            image_list = [Image.open(io.BytesIO(base64.b64decode(img))) for img in image_list]
+            image_list = [Image.open(io.BytesIO(base64.b64decode(img))).convert("RGB") for img in image_list]
             for image in image_list:
-                # TODO: convert to RGB? Should already be
                 current_images.append(train_transforms(image))
             images.append(current_images)
-        return {"pixel_values": images, "input_ids": [tokenizer.encode("doom image, high quality, 4k, high resolution", return_tensors="pt") for _ in images]}
+        return {"pixel_values": images, "input_ids": [tokenizer.encode(VALIDATION_PROMPT, return_tensors="pt") for _ in images]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
             dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        # train_dataset = dataset["test"].with_transform(preprocess_train)
 
-        # Select only the first sample to overfit on it
         train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
@@ -780,7 +776,6 @@ def main():
             "input_ids": torch.stack([example["input_ids"] for example in examples]),
         }
 
-    # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
@@ -884,7 +879,6 @@ def main():
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
-                # TODO: remove image conditioning
                 if args.skip_image_conditioning:
                     latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
@@ -911,28 +905,24 @@ def main():
                     bs, buffer_len, channels, height, width = batch["pixel_values"].shape
 
                     # Fold buffer len in to batch for encoding in one go
-                    print("Batch shape: ", batch["pixel_values"].shape)
-                    batch["pixel_values"] = batch["pixel_values"].view(bs * buffer_len, channels, height, width)
+                    folded_conditional_images= batch["pixel_values"].view(bs * buffer_len, channels, height, width)
                     
                     latents = vae.encode(
-                        batch["pixel_values"].to(dtype=weight_dtype)
+                        folded_conditional_images.to(dtype=weight_dtype)
                     ).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
-                    print("Latents shape: ", latents.shape)
                     
                     _, latent_channels, latent_height, latent_width = latents.shape
                     # Separate back the conditioning frames
                     latents = latents.view(bs, buffer_len, latent_channels, latent_height, latent_width)
-                    print("Latents shape after view: ", latents.shape)
                     
                     # Generate noise with the same shape as latents
-                    noise = torch.randn_like(latents)
+                    noise = torch.zeros_like(latents)
+                    noise[:, -1, :, :, :] = torch.randn_like(latents[:, -1, :, :, :])
 
                     if args.noise_offset:
                         # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                        noise += args.noise_offset * torch.randn(
-                            (latents.shape[0], latents.shape[1], latents.shape[2], 1, 1), device=latents.device
-                        )
+                        noise[:, -1, :, :, :] = args.noise_offset * torch.randn((latents.shape[0], latents.shape[2], 1, 1), device=latents.device)
                     timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bs,), device=latents.device)
                     timesteps = timesteps.long()
 
@@ -959,7 +949,7 @@ def main():
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-                print("Concatenated latents shape fed into unet: ", concatenated_latents.shape)
+
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     concatenated_latents,
@@ -967,15 +957,12 @@ def main():
                     encoder_hidden_states=encoder_hidden_states,
                     return_dict=False,
                 )[0]
-                print("Model pred shape: ", model_pred.shape)
-                print("Target shape: ", target.shape)
-               
+
                 if not args.skip_image_conditioning:
                     # Only predict the last frame – empirically verified that it is frame 0 and not frame -1. 
-                    target_last_frame = target[:, 0, :, :, :]
-                    print("Target last frame shape: ", target_last_frame.shape)
+                    target_last_frame = target[:, -1, :, :, :]
                 else:
-                    target_last_frame = target  
+                    target_last_frame = target
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target_last_frame.float(), reduction="mean")
@@ -1019,30 +1006,49 @@ def main():
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
-                #Generate an eval image every 25 steps
                 
-                if(global_step % args.validation_epochs == 0):
+                if(global_step % 250 == 0):
                     print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
                         validation_images = []
                         for i in range(2):  # Generate 2 images
-                            
+                            single_sample_batch = {
+                                    "pixel_values": batch["pixel_values"][0].unsqueeze(0),
+                                    "input_ids": batch["input_ids"][0].unsqueeze(0)
+                                }
                             with torch.no_grad():
-                                generated_image = run_inference_with_params(
-                                    unet=accelerator.unwrap_model(unet),
-                                    vae=vae,
-                                    noise_scheduler=noise_scheduler,
-                                    action_embedding=action_embedding,
-                                    tokenizer=tokenizer,
-                                    text_encoder=text_encoder,
-                                    batch=batch,  # Pass the single item
-                                    device=accelerator.device,
-                                    num_inference_steps=50,
-                                    skip_image_conditioning=args.skip_image_conditioning,
-                                    skip_action_conditioning=args.skip_action_conditioning,
-                                )
+                                if args.skip_image_conditioning:
+                                    generated_image = run_inference_with_params(
+                                        unet=accelerator.unwrap_model(unet),
+                                        vae=vae,
+                                        noise_scheduler=noise_scheduler,
+                                        action_embedding=action_embedding,
+                                        tokenizer=tokenizer,
+                                        text_encoder=text_encoder,
+                                        batch=single_sample_batch,
+                                        device=accelerator.device,
+                                        num_inference_steps=50,
+                                        do_classifier_free_guidance=True,
+                                        guidance_scale=7.5,
+                                        skip_action_conditioning=args.skip_action_conditioning,
+                                    )
+                                else:
+                                    generated_image = run_inference_img_conditioning_with_params(
+                                        unet=accelerator.unwrap_model(unet),
+                                        vae=vae,
+                                        noise_scheduler=noise_scheduler,
+                                        action_embedding=action_embedding,
+                                        tokenizer=tokenizer,
+                                        text_encoder=text_encoder,
+                                        batch=single_sample_batch,
+                                        device=accelerator.device,
+                                        num_inference_steps=50,
+                                        do_classifier_free_guidance=False,
+                                        guidance_scale=7.5,
+                                        skip_action_conditioning=args.skip_action_conditioning,
+                                    )
                             validation_images.append(generated_image)
 
                         if args.report_to == "wandb":

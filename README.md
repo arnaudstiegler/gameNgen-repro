@@ -12,8 +12,13 @@ python train_text_to_image.py  --dataset_name x --num_train_epochs 1 --train_bat
 
 Debug for now:
 ```
-python train_text_to_image.py  --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO --gradient_checkpointing --train_batch_size 8 --learning_rate 5e-5 --num_train_epochs 1500 --validation_epochs 250 --validation_prompt "doom image, high quality, 4k, high resolution" --skip_image_conditioning --skip_action_conditioning
+python train_text_to_image.py  --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO --gradient_checkpointing --train_batch_size 8 --learning_rate 5e-5 --num_train_epochs 1500 --validation_epochs 250 --skip_image_conditioning --skip_action_conditioning --max_train_samples 1
 ```
+
+### To overfit on a single image
+Add `--max_train_samples 1`
+
+### To loa
 
 
 ## Run training for original sd model

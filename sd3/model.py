@@ -42,10 +42,8 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
         # Initialize the new conv layer with the weights from the old one
         with torch.no_grad():
             new_conv_in.weight[:, :4, :, :] = old_conv_in.weight
-            # Setting the new channels to zero helps convergence to overfitting goal, but may be bad for larger datasets
-            new_conv_in.weight[:, 4:, :, :] = 0 
             # Initialize new channels to random values
-            # new_conv_in.weight[:, 4:, :, :] = torch.randn_like(new_conv_in.weight[:, 4:, :, :])
+            new_conv_in.weight[:, 4:, :, :] = torch.randn_like(new_conv_in.weight[:, 4:, :, :])
 
             new_conv_in.bias = old_conv_in.bias
 
