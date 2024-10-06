@@ -19,7 +19,7 @@ from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
 import os
 from config_sd import BUFFER_SIZE, HEIGHT, REPO_NAME, WIDTH, VALIDATION_PROMPT
-from sd3.model import get_model
+from sd3.model import get_model, load_model
 from functools import partial
 
 
@@ -266,7 +266,7 @@ def run_inference_img_conditioning_with_params(
         actions = batch["input_ids"]
 
         latent_height=latent_width=unet.config.sample_size
-        num_channels_latents = unet.config.in_channels
+        num_channels_latents = vae.config.latent_channels
     
         # Reshape and encode conditioning frames
         batch_size, buffer_len, channels, height, width = images.shape
@@ -328,7 +328,7 @@ def run_inference_img_conditioning_with_params(
             if do_classifier_free_guidance:
                 # In case of classifier free guidance, the unconditional case is without conditioning frames
                 uncond_latents = latents.clone()
-                uncond_latents[:, :BUFFER_SIZE] = 0
+                uncond_latents[:, :BUFFER_SIZE] = torch.randn_like(uncond_latents[:, :BUFFER_SIZE])
                 # BEWARE: order is important, the unconditional case should come first
                 latent_model_input = torch.cat([uncond_latents, latents])
             else:
@@ -389,6 +389,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference with customizable parameters")
     parser.add_argument("--skip_image_conditioning", action="store_true", help="Skip image conditioning")
     parser.add_argument("--skip_action_conditioning", action="store_true", help="Skip action conditioning")
+    parser.add_argument("--model_folder", type=str, help="Path to the folder containing the model weights")
     args = parser.parse_args()
 
     skip_image_conditioning = args.skip_image_conditioning
@@ -402,7 +403,10 @@ if __name__ == "__main__":
         else "cpu"
     )
     dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
-    unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(16, skip_image_conditioning=skip_image_conditioning)
+    if not args.model_folder:
+        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=skip_image_conditioning)
+    else:
+        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(args.model_folder, 17, skip_image_conditioning=skip_image_conditioning)
     unet.to(device)
     vae.to(device)
     action_embedding.to(device)
@@ -485,16 +489,16 @@ if __name__ == "__main__":
         )
     else:
         run_inference_img_conditioning_with_params(
-        unet,
-        vae,
-        noise_scheduler,
-        action_embedding,
-        tokenizer,
-        text_encoder,
-        batch,
-        device=device,
-        skip_action_conditioning=skip_action_conditioning,
-        do_classifier_free_guidance=True,
-            guidance_scale=7.5,
+            unet,
+            vae,
+            noise_scheduler,
+            action_embedding,
+            tokenizer,
+            text_encoder,
+            batch,
+            device=device,
+            skip_action_conditioning=skip_action_conditioning,
+            do_classifier_free_guidance=False,
+            guidance_scale=1.5,
             num_inference_steps=50,
         )

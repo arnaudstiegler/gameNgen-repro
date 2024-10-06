@@ -1046,6 +1046,7 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=False,
+                                        # TODO: paper mentions 1.5 but sd usually uses 7.5
                                         guidance_scale=7.5,
                                         skip_action_conditioning=args.skip_action_conditioning,
                                     )

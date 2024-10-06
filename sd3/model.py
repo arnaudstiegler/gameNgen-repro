@@ -1,3 +1,4 @@
+import os
 import torch
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler
 from transformers import CLIPTokenizer, CLIPTextModel
@@ -56,4 +57,23 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     # TODO: unfreeze
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
+    return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
+
+def load_model(model_folder: str, action_dim: int, skip_image_conditioning: bool = False):
+    noise_scheduler = DDPMScheduler.from_pretrained(
+        model_folder, subfolder="scheduler"
+    )
+
+    vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae")
+    unet = UNet2DConditionModel.from_pretrained(
+        model_folder, subfolder="unet"
+    )
+    tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer")
+    text_encoder = CLIPTextModel.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
+    )
+    action_embedding = torch.nn.Embedding(
+        num_embeddings=action_dim + 1, embedding_dim=768
+    )
+    action_embedding.load_state_dict(torch.load(os.path.join(model_folder, "action_embedding.pth")))
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
