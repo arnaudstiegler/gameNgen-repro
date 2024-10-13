@@ -1,8 +1,10 @@
 import torch
 
 
-def no_img_conditioning_augmentation(images: torch.Tensor,
-                               prob: float = 0.0) -> torch.Tensor:
+def no_img_conditioning_augmentation(
+    images: torch.Tensor,
+    prob: float = 0.1
+) -> torch.Tensor:
     """
     Zeroes out the conditioning frames with probability `prob`.
     This is necessary to train the model on no frame conditioning,

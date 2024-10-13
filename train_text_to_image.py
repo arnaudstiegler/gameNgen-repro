@@ -1046,12 +1046,6 @@ def main():
                 if accelerator.is_main_process and args.report_to == "wandb":
                     run.log({"train_loss": loss.item()}, step=global_step)
 
-                # Add the loss on the decoder
-                vae_loss = F.mse_loss(vae.decode(noisy_latents).sample,
-                                      batch["pixel_values"],
-                                      reduction="mean")
-                loss += vae_loss
-
                 # Gather the losses across all pro`cesses for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
                     loss.repeat(args.train_batch_size)).mean()
@@ -1116,9 +1110,9 @@ def main():
                                         batch=single_sample_batch,
                                         device=accelerator.device,
                                         num_inference_steps=50,
-                                        do_classifier_free_guidance=False,
+                                        do_classifier_free_guidance=True,
                                         # TODO: paper mentions 1.5 but sd usually uses 7.5
-                                        guidance_scale=7.5,
+                                        guidance_scale=1.5,
                                         skip_action_conditioning=args.
                                         skip_action_conditioning,
                                     )
