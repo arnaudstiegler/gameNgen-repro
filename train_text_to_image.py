@@ -975,6 +975,10 @@ def main():
                     # (this is the forward diffusion process)
                     noisy_latents = noise_scheduler.add_noise(
                         latents, noise, timesteps)
+                    
+                    # Add conditioning noise as well
+                    # TODO: write it
+
                     # We collapse the frame conditioning into the channel dimension
                     concatenated_latents = noisy_latents.view(
                         bs, buffer_len * latent_channels, latent_height,

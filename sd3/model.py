@@ -3,6 +3,7 @@ import torch
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDIMScheduler
 from transformers import CLIPTokenizer, CLIPTextModel
 from config_sd import BUFFER_SIZE
+from utils import NUM_BUCKETS
 
 
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
@@ -19,12 +20,19 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     noise_scheduler = DDIMScheduler.from_pretrained(
         PRETRAINED_MODEL_NAME_OR_PATH, subfolder="scheduler")
     # This is what the paper uses
-    noise_scheduler.config.prediction_type = "v_prediction"
+    noise_scheduler.register_to_config(prediction_type="v_prediction")
 
     vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                         subfolder="vae")
     unet = UNet2DConditionModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                                 subfolder="unet")
+    # There are 10 noise buckets total
+    unet.register_to_config(num_class_embeds=NUM_BUCKETS)
+    # TODO: pretty unsure about the dimension here
+    unet.class_embeddings = torch.nn.Embedding(NUM_BUCKETS, unet.time_embedding.linear_2.out_features)
+
+    import ipdb; ipdb.set_trace()
+
     tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                               subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
@@ -63,7 +71,7 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
 
 def load_model(model_folder: str, action_dim: int, skip_image_conditioning: bool = False):
-    noise_scheduler = DDPMScheduler.from_pretrained(
+    noise_scheduler = DDIMScheduler.from_pretrained(
         model_folder, subfolder="scheduler"
     )
 
