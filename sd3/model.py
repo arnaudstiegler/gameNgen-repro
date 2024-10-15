@@ -31,8 +31,6 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     # TODO: pretty unsure about the dimension here
     unet.class_embeddings = torch.nn.Embedding(NUM_BUCKETS, unet.time_embedding.linear_2.out_features)
 
-    import ipdb; ipdb.set_trace()
-
     tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                               subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,

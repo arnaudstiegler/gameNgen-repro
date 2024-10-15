@@ -254,7 +254,6 @@ def run_inference_img_conditioning_with_params(
     num_inference_steps=30,
     do_classifier_free_guidance=True,
     guidance_scale=7.5,
-    skip_image_conditioning=False,
     skip_action_conditioning=False,
 ):
     assert batch["pixel_values"].shape[0] == 1, "Batch size must be 1"
@@ -269,7 +268,7 @@ def run_inference_img_conditioning_with_params(
         num_channels_latents = vae.config.latent_channels
     
         # Reshape and encode conditioning frames
-        batch_size, buffer_len, channels, height, width = images.shape
+        batch_size, _, channels, height, width = images.shape
         conditioning_frames = images[:, : BUFFER_SIZE].reshape(
             -1, channels, height, width
         )
@@ -328,7 +327,7 @@ def run_inference_img_conditioning_with_params(
             if do_classifier_free_guidance:
                 # In case of classifier free guidance, the unconditional case is without conditioning frames
                 uncond_latents = latents.clone()
-                uncond_latents[:, :BUFFER_SIZE] = torch.randn_like(uncond_latents[:, :BUFFER_SIZE])
+                uncond_latents[:, :BUFFER_SIZE] = torch.zeros_like(uncond_latents[:, :BUFFER_SIZE])
                 # BEWARE: order is important, the unconditional case should come first
                 latent_model_input = torch.cat([uncond_latents, latents])
             else:

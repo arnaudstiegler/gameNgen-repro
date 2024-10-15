@@ -51,7 +51,7 @@ from PIL import Image
 import base64
 import io
 
-from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH
+from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB
 import wandb
 from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
@@ -469,6 +469,11 @@ def parse_args():
         action="store_true",
         help="Whether or not to use action conditioning.",
     )
+    parser.add_argument(
+        "--use_cfg",
+        action="store_true",
+        help="Whether or not to use classifier free guidance.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -749,14 +754,11 @@ def main():
             for image in image_list:
                 current_images.append(train_transforms(image))
             images.append(current_images)
-        return {
-            "pixel_values":
-            images,
-            "input_ids": [
-                tokenizer.encode(VALIDATION_PROMPT, return_tensors="pt")
-                for _ in images
-            ]
-        }
+
+        if args.skip_action_conditioning:
+            return {"pixel_values": images, "input_ids": [tokenizer.encode(VALIDATION_PROMPT, return_tensors="pt") for _ in images]}
+        else:
+            return {"pixel_values": images, "input_ids": examples["actions"]}
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
@@ -785,16 +787,15 @@ def main():
             images = images.to(memory_format=torch.contiguous_format).float()
 
             # UGLY HACK
-            images = no_img_conditioning_augmentation(images)
+            if args.use_cfg:
+                images = no_img_conditioning_augmentation(images, prob=ZERO_OUT_ACTION_CONDITIONING_PROB)
         else:
             images = torch.stack(
                 [example["pixel_values"][0] for example in examples])
             images = images.to(memory_format=torch.contiguous_format).float()
         return {
-            "pixel_values":
-            images,
-            "input_ids":
-            torch.stack([example["input_ids"] for example in examples]),
+            "pixel_values": images,
+            "input_ids": torch.stack([torch.tensor(example["input_ids"][:BUFFER_SIZE+1]) for example in examples]),
         }
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -865,6 +866,22 @@ def main():
     logger.info(
         f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    logger.info(f"  Zero out action conditioning probability = {ZERO_OUT_ACTION_CONDITIONING_PROB}")
+    logger.info(f"  Skip action conditioning = {args.skip_action_conditioning}")
+    logger.info(f"  Skip image conditioning = {args.skip_image_conditioning}")
+    logger.info(f"  Use CFG = {args.use_cfg}")
+    logger.info(f"  Prediction type = {args.prediction_type}")
+    logger.info(f"  SNR gamma = {args.snr_gamma}")
+    logger.info(f"  Max grad norm = {args.max_grad_norm}")
+    logger.info(f"  Learning rate = {args.learning_rate}")
+    logger.info(f"  Adam beta 1 = {args.adam_beta1}")
+    logger.info(f"  Adam beta 2 = {args.adam_beta2}")
+    logger.info(f"  Adam weight decay = {args.adam_weight_decay}")
+    logger.info(f"  Adam epsilon = {args.adam_epsilon}")
+    logger.info(f"  Lr scheduler = {args.lr_scheduler}")
+    logger.info(f"  Lr warmup steps = {args.lr_warmup_steps}")
+    logger.info(f"  Report to = {args.report_to}")
+    logger.info(f"  Output dir = {args.output_dir}")
     global_step = 0
     first_epoch = 0
 
@@ -1098,7 +1115,7 @@ def main():
                                         batch=single_sample_batch,
                                         device=accelerator.device,
                                         num_inference_steps=50,
-                                        do_classifier_free_guidance=True,
+                                        do_classifier_free_guidance=args.use_cfg,
                                         guidance_scale=7.5,
                                         skip_action_conditioning=args.
                                         skip_action_conditioning,
@@ -1114,7 +1131,7 @@ def main():
                                         batch=single_sample_batch,
                                         device=accelerator.device,
                                         num_inference_steps=50,
-                                        do_classifier_free_guidance=True,
+                                        do_classifier_free_guidance=args.use_cfg,
                                         # TODO: paper mentions 1.5 but sd usually uses 7.5
                                         guidance_scale=1.5,
                                         skip_action_conditioning=args.

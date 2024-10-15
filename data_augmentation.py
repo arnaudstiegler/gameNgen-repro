@@ -3,7 +3,7 @@ import torch
 
 def no_img_conditioning_augmentation(
     images: torch.Tensor,
-    prob: float = 0.1
+    prob: float = 0.0
 ) -> torch.Tensor:
     """
     Zeroes out the conditioning frames with probability `prob`.

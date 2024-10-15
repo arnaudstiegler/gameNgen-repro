@@ -1,6 +1,7 @@
 # Number of past frames/actions we provide
 BUFFER_SIZE = 2
-
+# Given by the paper
+ZERO_OUT_ACTION_CONDITIONING_PROB = 0.1
 
 # TODO: long-term, we should support arbitrary aspect ratios
 # HEIGHT = 240
