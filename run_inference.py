@@ -29,7 +29,7 @@ random.seed(9052924)
 
 repo_name = "CompVis/stable-diffusion-v1-4"
 
-HEIGHT = WIDTH = 512
+# HEIGHT = WIDTH = 512
 
 
 def read_action_embedding_from_safetensors(file_path: str):
@@ -165,7 +165,10 @@ def run_inference_with_params(
         images = batch["pixel_values"]
         actions = batch["input_ids"]
 
-        latent_height=latent_width=unet.config.sample_size
+
+        
+        latent_height=latent_width = unet.config.sample_size 
+
         batch_size = images.shape[0]
 
         if not skip_action_conditioning:
@@ -264,7 +267,7 @@ def run_inference_img_conditioning_with_params(
         images = batch["pixel_values"]
         actions = batch["input_ids"]
 
-        latent_height=latent_width=unet.config.sample_size
+        latent_height=latent_width=HEIGHT//vae_scale_factor
         num_channels_latents = vae.config.latent_channels
     
         # Reshape and encode conditioning frames
@@ -418,8 +421,8 @@ if __name__ == "__main__":
 
     train_transforms = transforms.Compose(
         [
-            transforms.Resize(512, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(512),
+            transforms.Resize(HEIGHT, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(HEIGHT),
             # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),

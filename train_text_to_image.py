@@ -1090,7 +1090,7 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
 
-                if (global_step % 250 == 0):
+                if (global_step % args.validation_step == 0):
                     print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
