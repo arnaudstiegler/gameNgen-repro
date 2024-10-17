@@ -1159,23 +1159,6 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-        # TODO: uncomment
-
-        # if accelerator.is_main_process:
-        #     if epoch % args.validation_epochs == 0:
-        #         # create pipeline
-        #         pipeline = DiffusionPipeline.from_pretrained(
-        #             args.pretrained_model_name_or_path,
-        #             unet=unwrap_model(unet),
-        #             revision=args.revision,
-        #             variant=args.variant,
-        #             torch_dtype=weight_dtype,
-        #         )
-        #         images = log_validation(pipeline, args, accelerator, epoch)
-
-        #         del pipeline
-        #         torch.cuda.empty_cache()
-
     # Save the model
     accelerator.wait_for_everyone()
 
@@ -1197,29 +1180,6 @@ def main():
                    os.path.join(args.output_dir, "embedding_info.pth"))
         unet = unet.to(torch.float32)
 
-        # unwrapped_unet = unwrap_model(unet)
-        # unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
-        # StableDiffusionPipeline.save_lora_weights(
-        #     save_directory=args.output_dir,
-        #     unet_lora_layers=unet_lora_state_dict,
-        #     safe_serialization=True,
-        # )
-
-        # Final inference
-        # TODO: uncomment once validation works
-        # if True:
-        #     pipeline = DiffusionPipeline.from_pretrained(
-        #         args.pretrained_model_name_or_path,
-        #         revision=args.revision,
-        #         variant=args.variant,
-        #         torch_dtype=weight_dtype,
-        #     )
-
-        #     # load attention processors
-        #     # pipeline.load_lora_weights(args.output_dir)
-
-        #     # run inference
-        #     images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
 
         if args.push_to_hub:
             unet.save_pretrained(os.path.join(args.output_dir, "unet"))

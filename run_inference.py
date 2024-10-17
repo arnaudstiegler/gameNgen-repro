@@ -306,7 +306,12 @@ def run_inference_img_conditioning_with_params(
         timesteps = noise_scheduler.timesteps
 
         if not skip_action_conditioning:
-            encoder_hidden_states = action_embedding(actions.to(device))
+            if do_classifier_free_guidance:
+                # Repeat the encoder hidden states for the unconditional case
+                # We don't "uncondition" on the action embedding
+                encoder_hidden_states = action_embedding(actions.to(device)).repeat(2,1,1)
+            else:
+                encoder_hidden_states = action_embedding(actions.to(device))
         else:
             if do_classifier_free_guidance:
                 positive_prompt = tokenizer.encode(VALIDATION_PROMPT, return_tensors="pt", padding="max_length", max_length=tokenizer.model_max_length)

@@ -16,6 +16,11 @@ Debug for now:
 python train_text_to_image.py  --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO --gradient_checkpointing --train_batch_size 8 --learning_rate 5e-5 --num_train_epochs 1500 --validation_epochs 250 --skip_image_conditioning --skip_action_conditioning --max_train_samples 1
 ```
 
+Full training
+```
+python train_text_to_image.py  --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO --gradient_checkpointing --train_batch_size 8 --learning_rate 2e-5 --num_train_epochs 10 --lr_scheduler cosine  --use_cfg --output_dir sd-model-finetune --push_to_hub --report_to wandb
+```
+
 ### To overfit on a single image
 Add `--max_train_samples 1`
 
