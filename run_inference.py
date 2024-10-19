@@ -21,6 +21,7 @@ import os
 from config_sd import BUFFER_SIZE, HEIGHT, REPO_NAME, WIDTH, VALIDATION_PROMPT
 from sd3.model import get_model, load_model
 from functools import partial
+from torch.amp import autocast
 
 
 torch.manual_seed(9052924)
@@ -28,8 +29,6 @@ np.random.seed(9052924)
 random.seed(9052924)
 
 repo_name = "CompVis/stable-diffusion-v1-4"
-
-# HEIGHT = WIDTH = 512
 
 
 def read_action_embedding_from_safetensors(file_path: str):
@@ -161,14 +160,9 @@ def run_inference_with_params(
     generator = torch.Generator(device=device)
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-    with torch.no_grad():
+    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.bfloat16):
         images = batch["pixel_values"]
         actions = batch["input_ids"]
-
-
-        
-        latent_height=latent_width = unet.config.sample_size 
-
         batch_size = images.shape[0]
 
         if not skip_action_conditioning:
@@ -263,11 +257,12 @@ def run_inference_img_conditioning_with_params(
 
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-    with torch.no_grad():
+    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.bfloat16):
         images = batch["pixel_values"]
         actions = batch["input_ids"]
 
-        latent_height=latent_width=HEIGHT//vae_scale_factor
+        latent_height = HEIGHT//vae_scale_factor
+        latent_width = WIDTH//vae_scale_factor
         num_channels_latents = vae.config.latent_channels
     
         # Reshape and encode conditioning frames
@@ -282,7 +277,6 @@ def run_inference_img_conditioning_with_params(
         conditioning_frames_latents = (
             conditioning_frames_latents * vae.config.scaling_factor
         )
-
         # Reshape conditioning_frames_latents back to include batch and buffer dimensions
         conditioning_frames_latents = conditioning_frames_latents.reshape(
             batch_size,
@@ -414,15 +408,15 @@ if __name__ == "__main__":
         unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=skip_image_conditioning)
     else:
         unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(args.model_folder, 17, skip_image_conditioning=skip_image_conditioning)
-    unet.to(device)
-    vae.to(device)
-    action_embedding.to(device)
-    text_encoder.to(device)
+    unet = unet.to(device).to(torch.bfloat16)
+    vae = vae.to(device).to(torch.bfloat16)
+    action_embedding = action_embedding.to(device).to(torch.bfloat16)
+    text_encoder = text_encoder.to(device).to(torch.bfloat16)
 
     train_transforms = transforms.Compose(
         [
-            transforms.Resize(HEIGHT, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(HEIGHT),
+            transforms.Resize((HEIGHT, WIDTH), interpolation=transforms.InterpolationMode.BILINEAR),
+            # transforms.CenterCrop(HEIGHT),
             # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),

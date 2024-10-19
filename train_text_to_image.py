@@ -55,6 +55,7 @@ from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, 
 import wandb
 from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
+from datasets import load_dataset, DatasetDict
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -76,8 +77,8 @@ def save_model_card(
             img_str += f"![img_{i}](./image_{i}.png)\n"
 
     model_description = f"""
-# LoRA text2image fine-tuning - {repo_id}
-These are LoRA adaption weights for {base_model}. The weights were fine-tuned on the {dataset_name} dataset. You can find some example images in the following. \n
+# GameNgen fine-tuning - {repo_id}
+Full finetune of {base_model}. The weights were fine-tuned on the {dataset_name} dataset. You can find some example images in the following. \n
 {img_str}
 """
 
@@ -96,7 +97,6 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned on
         "text-to-image",
         "diffusers",
         "diffusers-training",
-        "lora",
     ]
     model_card = populate_model_card(model_card, tags=tags)
 
@@ -155,6 +155,12 @@ def log_validation(
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
+        "--pretrained_model_name_or_path",
+        type=str,
+        default='arnaudstiegler/game-n-gen-finetuned-sd',
+        help="The name of the model to use as a base model.",
+    )
+    parser.add_argument(
         "--dataset_name",
         type=str,
         default=None,
@@ -205,12 +211,11 @@ def parse_args():
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
-        "--validation_epochs",
+        "--validation_steps",
         type=int,
-        default=1,
+        default=50,
         help=(
-            "Run fine-tuning validation every X epochs. The validation process consists of running the prompt"
-            " `args.validation_prompt` multiple times: `args.num_validation_images`."
+            "Run fine-tuning validation every 50 steps. The validation process consists of running the model on a batch of images"
         ),
     )
     parser.add_argument(
@@ -236,15 +241,6 @@ def parse_args():
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="A seed for reproducible training."
-    )
-    parser.add_argument(
-        "--resolution",
-        type=int,
-        default=HEIGHT,
-        help=(
-            "The resolution for input images, all the images in the train/validation dataset will be resized to this"
-            " resolution"
-        ),
     )
     parser.add_argument(
         "--center_crop",
@@ -550,31 +546,6 @@ def main():
                                   exist_ok=True,
                                   token=args.hub_token).repo_id
 
-        # Get the datasets: you can either provide your own training and evaluation files (see below)
-    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
-
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
-    # if args.dataset_name is not None:
-    #     # Downloading and loading a dataset from the hub.
-    #     dataset = load_dataset(
-    #         args.dataset_name,
-    #         args.dataset_config_name,
-    #         cache_dir=args.cache_dir,
-    #         data_dir=args.train_data_dir,
-    #     )
-    # else:
-    #     data_files = {}
-    #     if args.train_data_dir is not None:
-    #         data_files["train"] = os.path.join(args.train_data_dir, "**")
-    #     dataset = load_dataset(
-    #         "imagefolder",
-    #         data_files=data_files,
-    #         cache_dir=args.cache_dir,
-    #     )
-    #     # See more about loading custom images at
-    #     # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
-    from datasets import load_dataset, DatasetDict
     dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
 
     # Create a train-test split
@@ -603,25 +574,12 @@ def main():
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
 
-    # Freeze the unet parameters before adding adapters
-    # for param in unet.parameters():
-    #     param.requires_grad_(False)
-    # TODO: remove
-    # unet_lora_config = LoraConfig(
-    #     r=args.rank,
-    #     lora_alpha=args.rank,
-    #     init_lora_weights="gaussian",
-    #     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    # )
-
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     action_embedding.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-    # Add adapter and make sure the trainable params are in float32.
-    # unet.add_adapter(unet_lora_config)
     if args.mixed_precision == "fp16":
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(unet, dtype=torch.float32)
@@ -687,60 +645,15 @@ def main():
             eps=args.adam_epsilon,
         )
 
-    # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    # column_names = dataset["train"].column_names
-
-    # 6. Get the column names for input/target.
-    # dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
-    # if args.image_column is None:
-    #     image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    # else:
-    #     image_column = args.image_column
-    #     if image_column not in column_names:
-    #         raise ValueError(
-    #             f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-    #         )
-    # if args.caption_column is None:
-    #     caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    # else:
-    #     caption_column = args.caption_column
-    #     if caption_column not in column_names:
-    #         raise ValueError(
-    #             f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
-    #         )
-
-    # TODO: no need for tokenizing the captions
-    # def tokenize_captions(examples, is_train=True):
-    #     captions = []
-    #     for caption in examples[caption_column]:
-    #         if isinstance(caption, str):
-    #             captions.append(caption)
-    #         elif isinstance(caption, (list, np.ndarray)):
-    #             # take a random caption if there are multiple
-    #             captions.append(random.choice(caption) if is_train else caption[0])
-    #         else:
-    #             raise ValueError(
-    #                 f"Caption column `{caption_column}` should contain either strings or lists of strings."
-    #             )
-    #     inputs = tokenizer(
-    #         captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-    #     )
-
-    # TODO: should add the normalize here, but probably not the rest
     train_transforms = transforms.Compose([
-        transforms.Resize(args.resolution,
+        # Resizing should actually be useless since that's already the image size
+        transforms.Resize((HEIGHT, WIDTH),
                           interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.CenterCrop(args.resolution),
+        # transforms.CenterCrop(HEIGHT),
         # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ])
-
-    # def unwrap_model(model):
-    #     model = accelerator.unwrap_model(model)
-    #     model = model._orig_mod if is_compiled_module(model) else model
-    #     return model
 
     def preprocess_train(examples):
         # TODO: might need some changes here
@@ -1090,12 +1003,12 @@ def main():
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
 
-                if (global_step % args.validation_step == 0):
+                validation_images = []
+                if (global_step % args.validation_steps == 0):
                     print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
-                        validation_images = []
                         for i in range(2):  # Generate 2 images
                             single_sample_batch = {
                                 "pixel_values":
@@ -1193,8 +1106,7 @@ def main():
                 os.path.join(args.output_dir, "noise_scheduler"))
             save_model_card(
                 repo_id,
-                # images=images,
-                images=[],
+                images=validation_images if validation_images else [],
                 base_model=args.pretrained_model_name_or_path,
                 dataset_name=args.dataset_name,
                 repo_folder=args.output_dir,
