@@ -56,6 +56,9 @@ import wandb
 from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
 from datasets import load_dataset, DatasetDict
+from safetensors.torch import load_file
+import json
+from diffusers import DDIMScheduler
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -470,6 +473,12 @@ def parse_args():
         action="store_true",
         help="Whether or not to use classifier free guidance.",
     )
+    parser.add_argument(
+        "--load_pretrained",
+        type=str,
+        default=None,
+        help="Path to a directory containing a previously trained model to load.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -565,6 +574,23 @@ def main():
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)
+    
+    if args.load_pretrained:
+        logger.info(f"Loading pretrained model from {args.load_pretrained}")
+        unet.load_state_dict(load_file(os.path.join(args.load_pretrained, "unet", "diffusion_pytorch_model.safetensors")))
+        vae.load_state_dict(load_file(os.path.join(args.load_pretrained, "vae", "diffusion_pytorch_model.safetensors")))
+        
+        # Load scheduler configuration
+        with open(os.path.join(args.load_pretrained, "scheduler", "scheduler_config.json"), "r") as f:
+            scheduler_config = json.load(f)
+        noise_scheduler = DDIMScheduler.from_config(scheduler_config)
+        
+        action_embedding.load_state_dict(torch.load(os.path.join(args.load_pretrained, "action_embedding.pth")))
+
+        # Load embedding info
+        embedding_info = torch.load(os.path.join(args.load_pretrained, "embedding_info.pth"))
+        action_embedding.num_embeddings = embedding_info["num_embeddings"]
+        action_embedding.embedding_dim = embedding_info["embedding_dim"]
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -978,7 +1004,10 @@ def main():
 
                 # Log the loss
                 if accelerator.is_main_process and args.report_to == "wandb":
-                    run.log({"train_loss": loss.item()}, step=global_step)
+                    run.log({
+                        "train_loss": loss.item(),
+                        "learning_rate": lr_scheduler.get_last_lr()[0]  # Add this line
+                    }, step=global_step)
 
                 # Gather the losses across all pro`cesses for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
@@ -1000,7 +1029,10 @@ def main():
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_loss": train_loss}, step=global_step)
+                accelerator.log({
+                        "train_loss": train_loss,
+                        "learning_rate": lr_scheduler.get_last_lr()[0]  # Add this line
+                    }, step=global_step)
                 train_loss = 0.0
 
                 validation_images = []
