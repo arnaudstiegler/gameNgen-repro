@@ -258,20 +258,11 @@ def run_inference_img_conditioning_with_params(
     skip_action_conditioning=False,
 ):
     assert batch["pixel_values"].shape[0] == 1, "Batch size must be 1"
-
-
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
     with torch.no_grad(), autocast(device_type='cuda', dtype=torch.float32):
         images = batch["pixel_values"]
         actions = batch["input_ids"]
-
-    vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
-    image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.float32):
-        images = batch["pixel_values"]
-        actions = batch["input_ids"]
-
         latent_height = HEIGHT//vae_scale_factor
         latent_width = WIDTH//vae_scale_factor
         num_channels_latents = vae.config.latent_channels
@@ -419,7 +410,6 @@ if __name__ == "__main__":
     if not args.model_folder:
         unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=skip_image_conditioning)
     else:
-        
         unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         17, skip_image_conditioning=args.skip_image_conditioning)
         unet.load_state_dict(load_file(os.path.join(args.model_folder, "unet", "diffusion_pytorch_model.safetensors")))

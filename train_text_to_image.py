@@ -592,7 +592,6 @@ def main():
         action_embedding.num_embeddings = embedding_info["num_embeddings"]
         action_embedding.embedding_dim = embedding_info["embedding_dim"]
 
-
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
