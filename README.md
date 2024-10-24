@@ -17,7 +17,7 @@ python train_text_to_image.py  \
     --learning_rate 5e-5  \
     --num_train_epochs 1500  \
     --validation_steps 250  \
-    --max_train_samples [1
+    --max_train_samples 1
 ```
 
 Full training

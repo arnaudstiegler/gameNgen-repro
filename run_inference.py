@@ -216,6 +216,7 @@ def run_inference_with_params(
                 t,
                 encoder_hidden_states=encoder_hidden_states,
                 timestep_cond=None,
+                class_labels=None,
                 return_dict=False,
             )[0]
 
@@ -344,6 +345,7 @@ def run_inference_img_conditioning_with_params(
                 t,
                 encoder_hidden_states=encoder_hidden_states,
                 timestep_cond=None,
+                class_labels=None,
                 return_dict=False,
             )[0]
 
