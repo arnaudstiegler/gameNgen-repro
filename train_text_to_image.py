@@ -53,12 +53,13 @@ import io
 
 from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB
 import wandb
-from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
+from inference_utils import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
 from datasets import load_dataset, DatasetDict
 from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
+from utils import get_conditioning_noise, add_conditioning_noise
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -928,12 +929,16 @@ def main():
                     timesteps = timesteps.long()
 
                     # Add noise to the latents according to the noise magnitude at each timestep
-                    # (this is the forward diffusion process)
+                    # Note that the noise is only added to the target frame (last frame)
                     noisy_latents = noise_scheduler.add_noise(
                         latents, noise, timesteps)
                     
-                    # Add conditioning noise as well
-                    # TODO: write it
+                    
+                    # latents has shape (bs, buffer_len, latent_channels, latent_height, latent_width)
+                    noise_level, discretized_noise_level = get_conditioning_noise(noisy_latents[:, :-1, :, :, :])
+                    # Add noise to the conditioning frames
+                    noisy_latents[:, :-1, :, :, :] = add_conditioning_noise(noisy_latents[:, :-1, :, :, :], noise_level)
+                    
 
                     # We collapse the frame conditioning into the channel dimension
                     concatenated_latents = noisy_latents.view(
@@ -963,11 +968,11 @@ def main():
                     raise ValueError(
                         f"Unknown prediction type {noise_scheduler.config.prediction_type}"
                     )
-
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     concatenated_latents,
                     timesteps,
+                    class_labels=discretized_noise_level,
                     encoder_hidden_states=encoder_hidden_states,
                     return_dict=False,
                 )[0]

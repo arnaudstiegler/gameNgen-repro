@@ -28,7 +28,6 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
                                                 subfolder="unet")
     # There are 10 noise buckets total
     unet.register_to_config(num_class_embeds=NUM_BUCKETS)
-    # TODO: pretty unsure about the dimension here
     unet.class_embeddings = torch.nn.Embedding(NUM_BUCKETS, unet.time_embedding.linear_2.out_features)
 
     tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
