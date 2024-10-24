@@ -20,3 +20,9 @@ REPO_NAME = "arnaudstiegler/sd-model-gameNgen"
 
 # When not using frame conditioning, we use this prompt
 VALIDATION_PROMPT = "video game doom image, high quality, 4k, high resolution"
+
+# Datasets
+TRAINING_DATASET_DICT = {
+    "small": "P-H-B-D-a16z/ViZDoom-Deathmatch-PPO",
+    "large": "P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg",
+}

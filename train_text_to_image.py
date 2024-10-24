@@ -47,7 +47,7 @@ from PIL import Image
 import base64
 import io
 
-from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE
+from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
 import wandb
 from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
@@ -164,7 +164,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default=None,
+        default=TRAINING_DATASET_DICT['large'],
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
@@ -553,7 +553,7 @@ def main():
                                   exist_ok=True,
                                   token=args.hub_token).repo_id
 
-    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    dataset = load_dataset(args.dataset_name)
 
     # Create a train-test split
     dataset = dataset["train"].train_test_split(test_size=0.2)
@@ -796,6 +796,7 @@ def main():
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
+    logger.info(f"  Dataset = {args.dataset_name}")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(

@@ -8,16 +8,17 @@
 
 ## Datasets
 
-`arnaudstiegler/gameNgen_test_dataset`
+Test dataset: `arnaudstiegler/gameNgen_test_dataset`
+Training dataset (small): `P-H-B-D-a16z/ViZDoom-Deathmatch-PPO`
+Training dataset (large): `P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg`
 
-`P-H-B-D-a16z/ViZDoom-Deathmatch-PPO`
 
 ## Run training on gameNgen
 
 Debug on a single sample
 ```
 python train_text_to_image.py  \
-    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO  \
+    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg  \
     --gradient_checkpointing  \
     --train_batch_size 8  \
     --learning_rate 5e-5  \
@@ -29,10 +30,10 @@ python train_text_to_image.py  \
 Full training
 ```
 python train_text_to_image.py  \
-    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO  \
+    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg  \
     --gradient_checkpointing  \
     --train_batch_size 10  \
-    --learning_rate 2e-5  \
+    --learning_rate 5e-5  \
     --num_train_epochs 10  \
     --validation_steps 250  \
     --lr_scheduler cosine  \

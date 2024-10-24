@@ -18,14 +18,13 @@ from torchvision import transforms
 from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
 import os
-from config_sd import BUFFER_SIZE, HEIGHT, REPO_NAME, WIDTH, VALIDATION_PROMPT
+from config_sd import BUFFER_SIZE, HEIGHT, REPO_NAME, WIDTH, VALIDATION_PROMPT, TRAINING_DATASET_DICT, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE
 from sd3.model import get_model, load_model
 from functools import partial
 from torch.amp import autocast
 from safetensors.torch import load_file
 import json
 from data_augmentation import no_img_conditioning_augmentation
-from config_sd import ZERO_OUT_ACTION_CONDITIONING_PROB
 
 
 torch.manual_seed(9052924)
@@ -408,7 +407,7 @@ if __name__ == "__main__":
         else "cpu"
     )
 
-    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    dataset = load_dataset(TRAINING_DATASET_DICT['large'])
     if not args.model_folder:
         unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=skip_image_conditioning)
     else:
@@ -516,7 +515,7 @@ if __name__ == "__main__":
         device=device,
         skip_action_conditioning=skip_action_conditioning,
         do_classifier_free_guidance=True,
-        guidance_scale=7.5,
+        guidance_scale=7.5,  # We keep the regular guidance scale since there's no image conditioning
         num_inference_steps=50,
         )
     else:
@@ -531,6 +530,6 @@ if __name__ == "__main__":
             device=device,
             skip_action_conditioning=skip_action_conditioning,
             do_classifier_free_guidance=False,
-            guidance_scale=1.5,
+            guidance_scale=CFG_GUIDANCE_SCALE,
             num_inference_steps=50,
         )
