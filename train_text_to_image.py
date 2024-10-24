@@ -912,10 +912,7 @@ def main():
                                            latent_height, latent_width)
 
                     # Generate noise with the same shape as latents
-                    noise = torch.zeros_like(latents)
-                    noise[:,
-                          -1, :, :, :] = torch.randn_like(latents[:,
-                                                                  -1, :, :, :])
+                    noise = torch.randn_like(latents[:, -1, :, :, :])
 
                     if args.noise_offset:
                         # https://www.crosslabs.org//blog/diffusion-with-offset-noise
@@ -931,14 +928,14 @@ def main():
 
                     # Add noise to the latents according to the noise magnitude at each timestep
                     # Note that the noise is only added to the target frame (last frame)
-                    noisy_latents = noise_scheduler.add_noise(
-                        latents, noise, timesteps)
+                    noisy_latents = latents.clone()
+                    noisy_latents[:, -1, :, :, :] = noise_scheduler.add_noise(latents[:, -1, :, :, :], noise, timesteps)
                     
                     
-                    # latents has shape (bs, buffer_len, latent_channels, latent_height, latent_width)
-                    noise_level, discretized_noise_level = get_conditioning_noise(noisy_latents[:, :-1, :, :, :])
-                    # Add noise to the conditioning frames
-                    noisy_latents[:, :-1, :, :, :] = add_conditioning_noise(noisy_latents[:, :-1, :, :, :], noise_level)
+                    # Generate noise for the conditioning frames with a corresponding discrete noise level
+                    noise_level, discretized_noise_level = get_conditioning_noise(latents[:, :-1, :, :, :])
+                    # Add noise to the conditioning frames only
+                    noisy_latents[:, :-1, :, :, :] = add_conditioning_noise(latents[:, :-1, :, :, :], noise_level)
                     
 
                     # We collapse the frame conditioning into the channel dimension
@@ -1067,7 +1064,7 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
-                                        guidance_scale=CFG_GUIDANCE_SCALE,
+                                        guidance_scale=7.5,  # We keep the regular guidance scale since there's no image conditioning
                                         skip_action_conditioning=args.
                                         skip_action_conditioning,
                                     )

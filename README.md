@@ -1,9 +1,13 @@
 # gameNgen-repro
 
 # TODO List
+- [] Add the conditioning image noise
+- [] Add the VAE decoder training script
 - [] Put the buffer size as a parameter to the train script
 - [] Clean up the inference script
-- []
+- [] Try reducing the number of timesteps for inference
+- [] Implement latent caching for the autoregressive inference
+- [] Do some quick parameter sweep on LR, scheduler, etc.
 
 
 ## Datasets
