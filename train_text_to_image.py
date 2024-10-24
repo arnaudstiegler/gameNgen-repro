@@ -47,7 +47,7 @@ from PIL import Image
 import base64
 import io
 
-from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB
+from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE
 import wandb
 from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
@@ -56,6 +56,7 @@ from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
+
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -712,6 +713,9 @@ def main():
             # Process each example
             processed_images = []
             for example in examples:
+                assert len(example["pixel_values"]) >= BUFFER_SIZE + 1, (
+                    f'Image conditioning requires at least {BUFFER_SIZE + 1} frames, got {len(example["pixel_values"])}'
+                )
 
                 # This means you have BUFFER_SIZE conditioning frames + 1 target frame
                 processed_images.append(
@@ -1038,7 +1042,7 @@ def main():
 
                 validation_images = []
                 if (global_step % args.validation_steps == 0):
-                    print("Generating validation image")
+                    accelerator.print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
@@ -1062,7 +1066,7 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
-                                        guidance_scale=7.5,
+                                        guidance_scale=CFG_GUIDANCE_SCALE,
                                         skip_action_conditioning=args.
                                         skip_action_conditioning,
                                     )
@@ -1078,8 +1082,7 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
-                                        # TODO: paper mentions 1.5 but sd usually uses 7.5
-                                        guidance_scale=1.5,
+                                        guidance_scale=CFG_GUIDANCE_SCALE,
                                         skip_action_conditioning=args.
                                         skip_action_conditioning,
                                     )

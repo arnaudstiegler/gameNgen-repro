@@ -1,5 +1,11 @@
 # gameNgen-repro
 
+# TODO List
+- [] Put the buffer size as a parameter to the train script
+- [] Clean up the inference script
+- []
+
+
 ## Datasets
 
 `arnaudstiegler/gameNgen_test_dataset`
@@ -25,7 +31,7 @@ Full training
 python train_text_to_image.py  \
     --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO  \
     --gradient_checkpointing  \
-    --train_batch_size 64  \
+    --train_batch_size 10  \
     --learning_rate 2e-5  \
     --num_train_epochs 10  \
     --validation_steps 250  \
@@ -33,8 +39,7 @@ python train_text_to_image.py  \
     --use_cfg  \
     --output_dir sd-model-finetune  \
     --push_to_hub  \
-    --report_to wandb  \
-    --mixed_precision bf16
+    --report_to wandb
 ```
 
 

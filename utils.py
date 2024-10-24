@@ -1,8 +1,6 @@
 import torch
+from config_sd import MAX_NOISE_LEVEL, NUM_BUCKETS
 
-# This spec is from the paper
-MAX_NOISE_LEVEL = 0.7
-NUM_BUCKETS = 10
 
 def discretize_noise_level(noise_level: float) -> int:
     size_bucket = torch.tensor(MAX_NOISE_LEVEL / NUM_BUCKETS)
