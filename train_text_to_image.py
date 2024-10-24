@@ -41,19 +41,15 @@ import diffusers
 from sd3.model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
-from diffusers.utils import (
-    is_wandb_available,
-)
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
-from diffusers.utils.torch_utils import is_compiled_module
 from PIL import Image
 import base64
 import io
 
 from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB
 import wandb
-from inference_utils import run_inference_with_params, run_inference_img_conditioning_with_params
+from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
 from datasets import load_dataset, DatasetDict
 from safetensors.torch import load_file
