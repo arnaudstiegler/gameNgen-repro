@@ -31,7 +31,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder
+from huggingface_hub import create_repo, upload_folder, hf_hub_download
 from packaging import version
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -574,8 +574,6 @@ def main():
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)
-    
-    from huggingface_hub import hf_hub_download
 
     # Download the file
     file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
