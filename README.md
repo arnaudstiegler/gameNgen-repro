@@ -45,7 +45,8 @@ python train_text_to_image.py \
     --validation_steps 250 \
     --use_cfg \
     --output_dir sd-model-finetune \
-    --push_to_hub
+    --push_to_hub \
+    --report_to wandb
 ```
 
 

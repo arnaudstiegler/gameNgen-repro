@@ -1046,10 +1046,11 @@ def main():
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
-                        for i in range(2):  # Generate 2 images
+                        # Generate 2 images
+                        for i in range(2):  
                             single_sample_batch = {
-                                "pixel_values": batch["pixel_values"][0].unsqueeze(0),
-                                "input_ids": batch["input_ids"][0].unsqueeze(0)
+                                "pixel_values": batch["pixel_values"][i].unsqueeze(0),
+                                "input_ids": batch["input_ids"][i].unsqueeze(0)
                             }
                             with torch.no_grad():
                                 if args.skip_image_conditioning:

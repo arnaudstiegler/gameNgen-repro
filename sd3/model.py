@@ -10,6 +10,16 @@ from utils import NUM_BUCKETS
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 
 
+def get_ft_vae_decoder():
+    '''
+    Based on the original GameNGen code, the vae decoder is finetuned on images from the
+    training set to improve the quality of the images.
+    '''
+    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
+    decoder_state_dict = torch.load(file_path)
+    return decoder_state_dict
+
+
 def get_model(action_dim: int, skip_image_conditioning: bool = False):
     # Max number of actions in the action space
 
@@ -25,11 +35,7 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
 
     vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                         subfolder="vae")
-    
-    # Based on the original GameNGen code, the vae decoder is finetuned on images from the
-    # training set to improve the quality of the images.
-    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
-    decoder_state_dict = torch.load(file_path)
+    decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
 
 
@@ -71,26 +77,33 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
         unet.config["in_channels"] = new_in_channels
 
     unet.requires_grad_(True)
-    # TODO: unfreeze
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
 
-def load_model(model_folder: str, action_dim: int, skip_image_conditioning: bool = False):
+def load_model(model_folder: str, action_dim: int):
     noise_scheduler = DDIMScheduler.from_pretrained(
         model_folder, subfolder="scheduler"
     )
 
     vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae")
+    decoder_state_dict = get_ft_vae_decoder()
+    vae.decoder.load_state_dict(decoder_state_dict)
+
     unet = UNet2DConditionModel.from_pretrained(
         model_folder, subfolder="unet"
-    )
-    tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
     )
     action_embedding = torch.nn.Embedding(
         num_embeddings=action_dim + 1, embedding_dim=768
     )
     action_embedding.load_state_dict(torch.load(os.path.join(model_folder, "action_embedding.pth")))
+
+    assert noise_scheduler.config.prediction_type == "v_prediction", "Noise scheduler prediction type should be 'v_prediction'"
+    assert unet.config.num_class_embeds == NUM_BUCKETS, f"UNet num_class_embeds should be {NUM_BUCKETS}"
+
+    # Unaltered
+    tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer")
+    text_encoder = CLIPTextModel.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
+    )
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder

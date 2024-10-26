@@ -389,7 +389,7 @@ def run_inference_img_conditioning_with_params(
 
 
 if __name__ == "__main__":
-
+    # TODO: extract all that to a main function
     parser = argparse.ArgumentParser(description="Run inference with customizable parameters")
     parser.add_argument("--skip_image_conditioning", action="store_true", help="Skip image conditioning")
     parser.add_argument("--skip_action_conditioning", action="store_true", help="Skip action conditioning")
