@@ -31,7 +31,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder, hf_hub_download
+from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -572,15 +572,6 @@ def main():
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)
-
-    # Download the file
-    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
-
-    # Load the state dictionary
-    decoder_state_dict = torch.load(file_path)
-
-    # Load the state dictionary into the model's decoder
-    vae.decoder.load_state_dict(decoder_state_dict)
     
     if args.load_pretrained:
         logger.info(f"Loading pretrained model from {args.load_pretrained}")
@@ -921,7 +912,8 @@ def main():
                                            latent_height, latent_width)
 
                     # Generate noise with the same shape as latents
-                    noise = torch.randn_like(latents[:, -1, :, :, :])
+                    # Careful with the indexing here
+                    noise = torch.randn_like(latents[:, -1:, :, :, :])
 
                     if args.noise_offset:
                         # https://www.crosslabs.org//blog/diffusion-with-offset-noise
@@ -938,8 +930,7 @@ def main():
                     # Add noise to the latents according to the noise magnitude at each timestep
                     # Note that the noise is only added to the target frame (last frame)
                     noisy_latents = latents.clone()
-                    noisy_latents[:, -1, :, :, :] = noise_scheduler.add_noise(latents[:, -1, :, :, :], noise, timesteps)
-                    
+                    noisy_latents[:, -1:, :, :, :] = noise_scheduler.add_noise(latents[:, -1:, :, :, :], noise, timesteps)
                     
                     # Generate noise for the conditioning frames with a corresponding discrete noise level
                     noise_level, discretized_noise_level = get_conditioning_noise(latents[:, :-1, :, :, :])
@@ -1049,6 +1040,7 @@ def main():
 
                 validation_images = []
                 context_images = []  # To store context images
+                target_images = []
                 if (global_step % args.validation_steps == 0):
                     accelerator.print("Generating validation image")
                     unet.eval()
@@ -1096,6 +1088,7 @@ def main():
 
                                 # Extract and store context images
                                 context_images.append(single_sample_batch["pixel_values"][0][:BUFFER_SIZE])
+                                target_images.append(single_sample_batch["pixel_values"][0][-1])
 
                         if args.report_to == "wandb":
                             wandb.log(
@@ -1107,6 +1100,10 @@ def main():
                                     "context_images": [
                                         wandb.Image(context_img, caption=f"Context Image {i}")
                                         for i, context_img in enumerate(context_images)
+                                    ],
+                                    "target_images": [
+                                        wandb.Image(target_img, caption=f"Target Image {i}")
+                                        for i, target_img in enumerate(target_images)
                                     ]
                                 },
                                 step=global_step

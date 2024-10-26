@@ -2,6 +2,7 @@ import os
 import torch
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDIMScheduler
 from transformers import CLIPTokenizer, CLIPTextModel
+from huggingface_hub import hf_hub_download
 from config_sd import BUFFER_SIZE
 from utils import NUM_BUCKETS
 
@@ -24,6 +25,14 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
 
     vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                         subfolder="vae")
+    
+    # Based on the original GameNGen code, the vae decoder is finetuned on images from the
+    # training set to improve the quality of the images.
+    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
+    decoder_state_dict = torch.load(file_path)
+    vae.decoder.load_state_dict(decoder_state_dict)
+
+
     unet = UNet2DConditionModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                                 subfolder="unet")
     # There are 10 noise buckets total
