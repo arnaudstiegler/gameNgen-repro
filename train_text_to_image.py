@@ -31,7 +31,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder
+from huggingface_hub import create_repo, upload_folder, hf_hub_download
 from packaging import version
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -574,6 +574,15 @@ def main():
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)
+
+    # Download the file
+    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
+
+    # Load the state dictionary
+    decoder_state_dict = torch.load(file_path)
+
+    # Load the state dictionary into the model's decoder
+    vae.decoder.load_state_dict(decoder_state_dict)
     
     if args.load_pretrained:
         logger.info(f"Loading pretrained model from {args.load_pretrained}")
@@ -1036,6 +1045,7 @@ def main():
                 train_loss = 0.0
 
                 validation_images = []
+                context_images = []  # To store context images
                 if (global_step % args.validation_steps == 0):
                     print("Generating validation image")
                     unet.eval()
@@ -1043,10 +1053,8 @@ def main():
                         # Use the current batch for inference
                         for i in range(2):  # Generate 2 images
                             single_sample_batch = {
-                                "pixel_values":
-                                batch["pixel_values"][0].unsqueeze(0),
-                                "input_ids":
-                                batch["input_ids"][0].unsqueeze(0)
+                                "pixel_values": batch["pixel_values"][0].unsqueeze(0),
+                                "input_ids": batch["input_ids"][0].unsqueeze(0)
                             }
                             with torch.no_grad():
                                 if args.skip_image_conditioning:
@@ -1062,8 +1070,7 @@ def main():
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
                                         guidance_scale=7.5,
-                                        skip_action_conditioning=args.
-                                        skip_action_conditioning,
+                                        skip_action_conditioning=args.skip_action_conditioning,
                                     )
                                 else:
                                     generated_image = run_inference_img_conditioning_with_params(
@@ -1077,22 +1084,28 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
-                                        # TODO: paper mentions 1.5 but sd usually uses 7.5
                                         guidance_scale=1.5,
-                                        skip_action_conditioning=args.
-                                        skip_action_conditioning,
+                                        skip_action_conditioning=args.skip_action_conditioning,
                                     )
-                            validation_images.append(generated_image)
+                                validation_images.append(generated_image)
+
+                                # Extract and store context images
+                                context_images.append(single_sample_batch["pixel_values"][0][:BUFFER_SIZE])
 
                         if args.report_to == "wandb":
                             wandb.log(
                                 {
                                     "validation_images": [
-                                        wandb.Image(img)
-                                        for img in validation_images
+                                        wandb.Image(img, caption=f"Generated Image {i}")
+                                        for i, img in enumerate(validation_images)
+                                    ],
+                                    "context_images": [
+                                        wandb.Image(context_img, caption=f"Context Image {i}")
+                                        for i, context_img in enumerate(context_images)
                                     ]
                                 },
-                                step=global_step)
+                                step=global_step
+                            )
                         unet.train()
 
             logs = {
