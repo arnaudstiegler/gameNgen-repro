@@ -41,7 +41,6 @@ import diffusers
 from sd3.model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from PIL import Image
 import base64
@@ -56,52 +55,12 @@ from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
-
+from sd3.model import save_model, save_to_hub
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
-
-
-def save_model_card(
-    repo_id: str,
-    images: list = None,
-    base_model: str = None,
-    dataset_name: str = None,
-    repo_folder: str = None,
-):
-    img_str = ""
-    if images is not None:
-        for i, image in enumerate(images):
-            image.save(os.path.join(repo_folder, f"image_{i}.png"))
-            img_str += f"![img_{i}](./image_{i}.png)\n"
-
-    model_description = f"""
-# GameNgen fine-tuning - {repo_id}
-Full finetune of {base_model}. The weights were fine-tuned on the {dataset_name} dataset. You can find some example images in the following. \n
-{img_str}
-"""
-
-    model_card = load_or_create_model_card(
-        repo_id_or_path=repo_id,
-        from_training=True,
-        license="creativeml-openrail-m",
-        base_model=base_model,
-        model_description=model_description,
-        inference=True,
-    )
-
-    tags = [
-        "stable-diffusion",
-        "stable-diffusion-diffusers",
-        "text-to-image",
-        "diffusers",
-        "diffusers-training",
-    ]
-    model_card = populate_model_card(model_card, tags=tags)
-
-    model_card.save(os.path.join(repo_folder, "README.md"))
 
 
 def log_validation(
@@ -1047,6 +1006,16 @@ def main():
                     if accelerator.is_main_process:
                         # Use the current batch for inference
                         # Generate 2 images
+                        
+                        # Save model locally
+                        if not os.path.exists(args.output_dir):
+                            os.makedirs(args.output_dir)
+                        unet.save_pretrained(args.output_dir)
+                        vae.save_pretrained(args.output_dir)
+                        noise_scheduler.save_pretrained(args.output_dir)
+                        torch.save(action_embedding.state_dict(), os.path.join(args.output_dir, "action_embedding.pth"))
+
+
                         for i in range(2):  
                             single_sample_batch = {
                                 "pixel_values": batch["pixel_values"][i].unsqueeze(0),
@@ -1124,47 +1093,9 @@ def main():
     accelerator.wait_for_everyone()
 
     if accelerator.is_main_process:
-        unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-        vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-        noise_scheduler.save_pretrained(
-            os.path.join(args.output_dir, "scheduler"))
-        torch.save(action_embedding.state_dict(),
-                   os.path.join(args.output_dir, "action_embedding.pth"))
-
-        # Save embedding dimensions
-        embedding_info = {
-            "num_embeddings": action_embedding.num_embeddings,
-            "embedding_dim": action_embedding.embedding_dim
-        }
-
-        torch.save(embedding_info,
-                   os.path.join(args.output_dir, "embedding_info.pth"))
-        unet = unet.to(torch.float32)
-
-
+        save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
         if args.push_to_hub:
-            unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-            vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-            save_file(
-                action_embedding.state_dict(),
-                os.path.join(args.output_dir,
-                             "action_embedding_model.safetensors"),
-            )
-            noise_scheduler.save_pretrained(
-                os.path.join(args.output_dir, "noise_scheduler"))
-            save_model_card(
-                repo_id,
-                images=validation_images if validation_images else [],
-                base_model=args.pretrained_model_name_or_path,
-                dataset_name=args.dataset_name,
-                repo_folder=args.output_dir,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
+            save_to_hub(args.repo_id, args.output_dir, args.dataset_name, validation_images, unet, vae, noise_scheduler, action_embedding)
 
     accelerator.end_training()
 
