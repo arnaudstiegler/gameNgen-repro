@@ -9,6 +9,7 @@
 - [] Implement latent caching for the autoregressive inference
 - [] Do some quick parameter sweep on LR, scheduler, etc.
 - [x] Add the target image to the validation logging
+- [x] Try some speed optimizations
 
 
 ## Datasets
@@ -42,7 +43,7 @@ python train_text_to_image.py \
     --gradient_checkpointing \
     --learning_rate 5e-5 \
     --train_batch_size 12 \
-    ----dataloader_num_workers 18 \
+    --dataloader_num_workers 18 \
     --num_train_epochs 10 \
     --validation_steps 250 \
     --use_cfg \
