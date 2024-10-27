@@ -19,7 +19,7 @@ def get_ft_vae_decoder():
     training set to improve the quality of the images.
     '''
     file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
-    decoder_state_dict = torch.load(file_path, map_location=torch.device('cpu'))
+    decoder_state_dict = torch.load(file_path)
     return decoder_state_dict
 
 
@@ -37,16 +37,17 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     noise_scheduler.register_to_config(prediction_type="v_prediction")
 
     vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                        subfolder="vae", map_location=torch.device('cpu'))
+                                        subfolder="vae")
     decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
 
 
     unet = UNet2DConditionModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                                subfolder="unet", map_location=torch.device('cpu'))
+                                                subfolder="unet")
     # There are 10 noise buckets total
     unet.register_to_config(num_class_embeds=NUM_BUCKETS)
-    unet.add_module('class_embeddings', torch.nn.Embedding(NUM_BUCKETS, unet.time_embedding.linear_2.out_features))
+    # We do not use .add_module() because the class_embedding is already initialized as None
+    unet.class_embedding = torch.nn.Embedding(NUM_BUCKETS, unet.time_embedding.linear_2.out_features)
 
     tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
                                               subfolder="tokenizer")
@@ -92,9 +93,9 @@ def load_model(model_folder: str, action_dim: int):
     vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae", map_location=torch.device('cpu'))
     decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
-
+    import ipdb; ipdb.set_trace()
     unet = UNet2DConditionModel.from_pretrained(
-        model_folder, subfolder="unet", map_location=torch.device('cpu')
+        model_folder, subfolder="unet"
     )
     action_embedding = torch.nn.Embedding(
         num_embeddings=action_dim + 1, embedding_dim=768
@@ -107,7 +108,7 @@ def load_model(model_folder: str, action_dim: int):
     # Unaltered
     tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder", map_location=torch.device('cpu')
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
     )
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
 

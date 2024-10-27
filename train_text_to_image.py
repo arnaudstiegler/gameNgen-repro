@@ -1008,14 +1008,7 @@ def main():
                         # Generate 2 images
                         
                         # Save model locally
-                        if not os.path.exists(args.output_dir):
-                            os.makedirs(args.output_dir)
-                        unet.save_pretrained(args.output_dir)
-                        vae.save_pretrained(args.output_dir)
-                        noise_scheduler.save_pretrained(args.output_dir)
-                        torch.save(action_embedding.state_dict(), os.path.join(args.output_dir, "action_embedding.pth"))
-
-
+                        save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
                         for i in range(2):  
                             single_sample_batch = {
                                 "pixel_values": batch["pixel_values"][i].unsqueeze(0),
