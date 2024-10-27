@@ -62,6 +62,8 @@ from sd3.model import save_model, save_to_hub
 
 logger = get_logger(__name__, log_level="INFO")
 
+torch.set_float32_matmul_precision('high')
+
 
 def log_validation(
     pipeline,
@@ -290,7 +292,7 @@ def parse_args():
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
-        default=0,
+        default=16,
         help=(
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
@@ -556,6 +558,15 @@ def main():
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
+
+    # Compile the model
+    # NB: doesn't speed up training atm
+    # unet = torch.compile(
+    #     unet,
+    #     backend='inductor',
+    #     mode='reduce-overhead',
+    #     fullgraph=True,
+    # )
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
