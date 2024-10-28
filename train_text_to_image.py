@@ -31,7 +31,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder, hf_hub_download
+from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -41,17 +41,12 @@ import diffusers
 from sd3.model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
-from diffusers.utils import (
-    is_wandb_available,
-)
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
-from diffusers.utils.torch_utils import is_compiled_module
 from PIL import Image
 import base64
 import io
 
-from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB
+from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
 import wandb
 from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
@@ -59,51 +54,15 @@ from datasets import load_dataset, DatasetDict
 from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
+from utils import get_conditioning_noise, add_conditioning_noise
+from sd3.model import save_model, save_to_hub
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
-
-def save_model_card(
-    repo_id: str,
-    images: list = None,
-    base_model: str = None,
-    dataset_name: str = None,
-    repo_folder: str = None,
-):
-    img_str = ""
-    if images is not None:
-        for i, image in enumerate(images):
-            image.save(os.path.join(repo_folder, f"image_{i}.png"))
-            img_str += f"![img_{i}](./image_{i}.png)\n"
-
-    model_description = f"""
-# GameNgen fine-tuning - {repo_id}
-Full finetune of {base_model}. The weights were fine-tuned on the {dataset_name} dataset. You can find some example images in the following. \n
-{img_str}
-"""
-
-    model_card = load_or_create_model_card(
-        repo_id_or_path=repo_id,
-        from_training=True,
-        license="creativeml-openrail-m",
-        base_model=base_model,
-        model_description=model_description,
-        inference=True,
-    )
-
-    tags = [
-        "stable-diffusion",
-        "stable-diffusion-diffusers",
-        "text-to-image",
-        "diffusers",
-        "diffusers-training",
-    ]
-    model_card = populate_model_card(model_card, tags=tags)
-
-    model_card.save(os.path.join(repo_folder, "README.md"))
+torch.set_float32_matmul_precision('high')
 
 
 def log_validation(
@@ -166,7 +125,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default=None,
+        default=TRAINING_DATASET_DICT['large'],
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
@@ -333,7 +292,7 @@ def parse_args():
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
-        default=0,
+        default=16,
         help=(
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
@@ -555,7 +514,7 @@ def main():
                                   exist_ok=True,
                                   token=args.hub_token).repo_id
 
-    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
+    dataset = load_dataset(args.dataset_name)
 
     # Create a train-test split
     dataset = dataset["train"].train_test_split(test_size=0.2)
@@ -574,15 +533,6 @@ def main():
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)
-
-    # Download the file
-    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
-
-    # Load the state dictionary
-    decoder_state_dict = torch.load(file_path)
-
-    # Load the state dictionary into the model's decoder
-    vae.decoder.load_state_dict(decoder_state_dict)
     
     if args.load_pretrained:
         logger.info(f"Loading pretrained model from {args.load_pretrained}")
@@ -608,6 +558,15 @@ def main():
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
+
+    # Compile the model
+    # NB: doesn't speed up training atm
+    # unet = torch.compile(
+    #     unet,
+    #     backend='inductor',
+    #     mode='reduce-overhead',
+    #     fullgraph=True,
+    # )
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
@@ -724,6 +683,9 @@ def main():
             # Process each example
             processed_images = []
             for example in examples:
+                assert len(example["pixel_values"]) >= BUFFER_SIZE + 1, (
+                    f'Image conditioning requires at least {BUFFER_SIZE + 1} frames, got {len(example["pixel_values"])}'
+                )
 
                 # This means you have BUFFER_SIZE conditioning frames + 1 target frame
                 processed_images.append(
@@ -804,6 +766,7 @@ def main():
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
+    logger.info(f"  Dataset = {args.dataset_name}")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(
@@ -919,10 +882,8 @@ def main():
                                            latent_height, latent_width)
 
                     # Generate noise with the same shape as latents
-                    noise = torch.zeros_like(latents)
-                    noise[:,
-                          -1, :, :, :] = torch.randn_like(latents[:,
-                                                                  -1, :, :, :])
+                    # Careful with the indexing here
+                    noise = torch.randn_like(latents[:, -1:, :, :, :])
 
                     if args.noise_offset:
                         # https://www.crosslabs.org//blog/diffusion-with-offset-noise
@@ -937,12 +898,15 @@ def main():
                     timesteps = timesteps.long()
 
                     # Add noise to the latents according to the noise magnitude at each timestep
-                    # (this is the forward diffusion process)
-                    noisy_latents = noise_scheduler.add_noise(
-                        latents, noise, timesteps)
+                    # Note that the noise is only added to the target frame (last frame)
+                    noisy_latents = latents.clone()
+                    noisy_latents[:, -1:, :, :, :] = noise_scheduler.add_noise(latents[:, -1:, :, :, :], noise, timesteps)
                     
-                    # Add conditioning noise as well
-                    # TODO: write it
+                    # Generate noise for the conditioning frames with a corresponding discrete noise level
+                    noise_level, discretized_noise_level = get_conditioning_noise(latents[:, :-1, :, :, :])
+                    # Add noise to the conditioning frames only
+                    noisy_latents[:, :-1, :, :, :] = add_conditioning_noise(latents[:, :-1, :, :, :], noise_level)
+                    
 
                     # We collapse the frame conditioning into the channel dimension
                     concatenated_latents = noisy_latents.view(
@@ -972,11 +936,11 @@ def main():
                     raise ValueError(
                         f"Unknown prediction type {noise_scheduler.config.prediction_type}"
                     )
-
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     concatenated_latents,
                     timesteps,
+                    class_labels=discretized_noise_level,
                     encoder_hidden_states=encoder_hidden_states,
                     return_dict=False,
                 )[0]
@@ -1046,15 +1010,20 @@ def main():
 
                 validation_images = []
                 context_images = []  # To store context images
+                target_images = []
                 if (global_step % args.validation_steps == 0):
-                    print("Generating validation image")
+                    accelerator.print("Generating validation image")
                     unet.eval()
                     if accelerator.is_main_process:
                         # Use the current batch for inference
-                        for i in range(2):  # Generate 2 images
+                        # Generate 2 images
+                        
+                        # Save model locally
+                        save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
+                        for i in range(2):  
                             single_sample_batch = {
-                                "pixel_values": batch["pixel_values"][0].unsqueeze(0),
-                                "input_ids": batch["input_ids"][0].unsqueeze(0)
+                                "pixel_values": batch["pixel_values"][i].unsqueeze(0),
+                                "input_ids": batch["input_ids"][i].unsqueeze(0)
                             }
                             with torch.no_grad():
                                 if args.skip_image_conditioning:
@@ -1069,8 +1038,9 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
-                                        guidance_scale=7.5,
-                                        skip_action_conditioning=args.skip_action_conditioning,
+                                        guidance_scale=7.5,  # We keep the regular guidance scale since there's no image conditioning
+                                        skip_action_conditioning=args.
+                                        skip_action_conditioning,
                                     )
                                 else:
                                     generated_image = run_inference_img_conditioning_with_params(
@@ -1084,13 +1054,15 @@ def main():
                                         device=accelerator.device,
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
-                                        guidance_scale=1.5,
-                                        skip_action_conditioning=args.skip_action_conditioning,
+                                        guidance_scale=CFG_GUIDANCE_SCALE,
+                                        skip_action_conditioning=args.
+                                        skip_action_conditioning,
                                     )
                                 validation_images.append(generated_image)
 
                                 # Extract and store context images
                                 context_images.append(single_sample_batch["pixel_values"][0][:BUFFER_SIZE])
+                                target_images.append(single_sample_batch["pixel_values"][0][-1])
 
                         if args.report_to == "wandb":
                             wandb.log(
@@ -1102,6 +1074,10 @@ def main():
                                     "context_images": [
                                         wandb.Image(context_img, caption=f"Context Image {i}")
                                         for i, context_img in enumerate(context_images)
+                                    ],
+                                    "target_images": [
+                                        wandb.Image(target_img, caption=f"Target Image {i}")
+                                        for i, target_img in enumerate(target_images)
                                     ]
                                 },
                                 step=global_step
@@ -1121,47 +1097,9 @@ def main():
     accelerator.wait_for_everyone()
 
     if accelerator.is_main_process:
-        unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-        vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-        noise_scheduler.save_pretrained(
-            os.path.join(args.output_dir, "scheduler"))
-        torch.save(action_embedding.state_dict(),
-                   os.path.join(args.output_dir, "action_embedding.pth"))
-
-        # Save embedding dimensions
-        embedding_info = {
-            "num_embeddings": action_embedding.num_embeddings,
-            "embedding_dim": action_embedding.embedding_dim
-        }
-
-        torch.save(embedding_info,
-                   os.path.join(args.output_dir, "embedding_info.pth"))
-        unet = unet.to(torch.float32)
-
-
+        save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
         if args.push_to_hub:
-            unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-            vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-            save_file(
-                action_embedding.state_dict(),
-                os.path.join(args.output_dir,
-                             "action_embedding_model.safetensors"),
-            )
-            noise_scheduler.save_pretrained(
-                os.path.join(args.output_dir, "noise_scheduler"))
-            save_model_card(
-                repo_id,
-                images=validation_images if validation_images else [],
-                base_model=args.pretrained_model_name_or_path,
-                dataset_name=args.dataset_name,
-                repo_folder=args.output_dir,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
+            save_to_hub(args.repo_id, args.output_dir, args.dataset_name, validation_images, unet, vae, noise_scheduler, action_embedding)
 
     accelerator.end_training()
 

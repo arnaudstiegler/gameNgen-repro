@@ -531,7 +531,6 @@ def main():
     vae.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-    # import ipdb; ipdb.set_trace()
 
     # Add adapter and make sure the trainable params are in float32.
     # unet.add_adapter(unet_lora_config)
