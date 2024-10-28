@@ -93,7 +93,6 @@ def load_model(model_folder: str, action_dim: int):
     vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae", map_location=torch.device('cpu'))
     decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
-    import ipdb; ipdb.set_trace()
     unet = UNet2DConditionModel.from_pretrained(
         model_folder, subfolder="unet"
     )
@@ -171,7 +170,7 @@ def save_model(output_dir: str, unet, vae, noise_scheduler, action_embedding):
                 os.path.join(output_dir, "embedding_info.pth"))
     unet = unet.to(torch.float32)
 
-def save_to_hub(repo_id: str, output_dir: str, dataset_name: str, validation_images: list[str] | None, unet, vae, noise_scheduler, action_embedding):
+def save_to_hub(repo_id: str, output_dir: str, dataset_name: str, validation_images: list[str] | None, unet: UNet2DConditionModel, vae: AutoencoderKL, noise_scheduler: DDIMScheduler, action_embedding: torch.nn.Embedding, save_model_card: bool = True):
     unet.save_pretrained(os.path.join(output_dir, "unet"))
     vae.save_pretrained(os.path.join(output_dir, "vae"))
     save_file(
@@ -182,13 +181,14 @@ def save_to_hub(repo_id: str, output_dir: str, dataset_name: str, validation_ima
     noise_scheduler.save_pretrained(
         os.path.join(output_dir, "noise_scheduler"))
 
-    save_model_card(
-        repo_id,
-        images=validation_images if validation_images else [],
-        base_model=PRETRAINED_MODEL_NAME_OR_PATH,
-        dataset_name=dataset_name,
-        repo_folder=output_dir,
-    )
+    if save_model_card:
+        save_model_card(
+            repo_id,
+            images=validation_images if validation_images else [],
+            base_model=PRETRAINED_MODEL_NAME_OR_PATH,
+            dataset_name=dataset_name,
+            repo_folder=output_dir,
+        )
     upload_folder(
         repo_id=repo_id,
         folder_path=output_dir,

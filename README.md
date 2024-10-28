@@ -47,7 +47,7 @@ python train_text_to_image.py \
     --num_train_epochs 10 \
     --validation_steps 250 \
     --use_cfg \
-    --output_dir sd-model-finetune \
+    --output_dir sd-model-finetuned \
     --push_to_hub \
     --report_to wandb
 ```
