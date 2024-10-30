@@ -272,7 +272,7 @@ def run_inference_img_conditioning_with_params(
         conditioning_frames = images[:, : BUFFER_SIZE].reshape(
             -1, channels, height, width
         )
-
+    
         conditioning_frames_latents = vae.encode(
             conditioning_frames.to(device)
         ).latent_dist.sample()
@@ -323,6 +323,7 @@ def run_inference_img_conditioning_with_params(
         latents = torch.cat(
             [conditioning_frames_latents, latents.unsqueeze(1)], dim=1
         )
+
         # FOld the conditioning frames into the channel dimension
         latents = latents.view(1, -1, latent_height, latent_width)
 
@@ -373,11 +374,13 @@ def run_inference_img_conditioning_with_params(
             )
             # The conditioning frames should not be modified by the denoising process
             assert torch.all(conditioning_frames_latents == reshaped_frames[:, :BUFFER_SIZE])
+        
 
         # only take the last frame
         image = vae.decode(
             reshaped_frames[:, -1] / vae.config.scaling_factor, return_dict=False
         )[0]
+
 
         # Post-process the image
         image = image_processor.postprocess(
@@ -388,8 +391,115 @@ def run_inference_img_conditioning_with_params(
     return image[0]
 
 
+def next_latent(
+    unet,
+    vae,
+    noise_scheduler,
+    action_embedding,
+    tokenizer,
+    text_encoder,
+    context_latents,  # New parameter: pre-encoded context frames
+    device,
+    num_inference_steps=30,
+    do_classifier_free_guidance=True,
+    guidance_scale=7.5,
+    skip_action_conditioning=False,
+    actions=None,  # New parameter: action conditioning
+):
+    batch_size = context_latents.shape[0]
+    latent_height = context_latents.shape[-2]
+    latent_width = context_latents.shape[-1]
+    num_channels_latents = context_latents.shape[2]
+
+    vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.float32):
+        # Generate initial noise for the target frame
+        latents = get_latents(
+            noise_scheduler,
+            batch_size,
+            HEIGHT,
+            WIDTH,
+            num_channels_latents,
+            vae_scale_factor,
+            device,
+            dtype=unet.dtype,
+        )
+
+        # Prepare timesteps
+        noise_scheduler.set_timesteps(num_inference_steps, device=device)
+        timesteps = noise_scheduler.timesteps
+
+        if not skip_action_conditioning:
+            if do_classifier_free_guidance:
+                encoder_hidden_states = action_embedding(actions.to(device)).repeat(2,1,1)
+            else:
+                encoder_hidden_states = action_embedding(actions.to(device))
+        
+        latents = torch.cat(
+            [context_latents, latents.unsqueeze(1)], dim=1
+        )
+
+        # Fold the conditioning frames into the channel dimension
+        latents = latents.view(batch_size, -1, latent_height, latent_width)
+
+        # Denoising loop
+        for _, t in enumerate(timesteps):
+            if do_classifier_free_guidance:
+                # In case of classifier free guidance, the unconditional case is without conditioning frames
+                uncond_latents = latents.clone()
+                uncond_latents[:, :BUFFER_SIZE] = torch.zeros_like(uncond_latents[:, :BUFFER_SIZE])
+                # BEWARE: order is important, the unconditional case should come first
+                latent_model_input = torch.cat([uncond_latents, latents])
+            else:
+                latent_model_input = latents
+            latent_model_input = noise_scheduler.scale_model_input(latent_model_input, t)
+
+            # Predict noise
+            noise_pred = unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=encoder_hidden_states,
+                timestep_cond=None,
+                class_labels=torch.zeros(batch_size, dtype=torch.long).to(device),
+                return_dict=False,
+            )[0]
+
+            if do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (
+                    noise_pred_text - noise_pred_uncond
+                )
+
+            # Perform denoising step on the last frame only
+            reshaped_frames = latents.reshape(
+                batch_size,
+                BUFFER_SIZE+1,
+                num_channels_latents,
+                latent_height,
+                latent_width,
+            )
+            last_frame = reshaped_frames[:, -1]
+            denoised_last_frame = noise_scheduler.step(
+                noise_pred, t, last_frame, return_dict=False
+            )[0]
+
+            reshaped_frames[:, -1] = denoised_last_frame
+            latents = reshaped_frames.reshape(
+                batch_size, -1, latent_height, latent_width
+            )
+
+        # Return the final latents of the target frame only
+        reshaped_frames = latents.reshape(
+            batch_size,
+            BUFFER_SIZE+1,
+            num_channels_latents,
+            latent_height,
+            latent_width,
+        )
+        return reshaped_frames[:, -1]  # Return target frame latents only
+
 if __name__ == "__main__":
-    # TODO: extract all that to a main function
+
     parser = argparse.ArgumentParser(description="Run inference with customizable parameters")
     parser.add_argument("--skip_image_conditioning", action="store_true", help="Skip image conditioning")
     parser.add_argument("--skip_action_conditioning", action="store_true", help="Skip action conditioning")
@@ -407,26 +517,11 @@ if __name__ == "__main__":
         else "cpu"
     )
 
-    dataset = load_dataset(TRAINING_DATASET_DICT['large'])
+    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
     if not args.model_folder:
         unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=skip_image_conditioning)
     else:
-        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
-        17, skip_image_conditioning=args.skip_image_conditioning)
-        unet.load_state_dict(load_file(os.path.join(args.model_folder, "unet", "diffusion_pytorch_model.safetensors")))
-        vae.load_state_dict(load_file(os.path.join(args.model_folder, "vae", "diffusion_pytorch_model.safetensors")))
-        
-        # Load scheduler configuration
-        with open(os.path.join(args.model_folder, "scheduler", "scheduler_config.json"), "r") as f:
-            scheduler_config = json.load(f)
-        noise_scheduler = DDIMScheduler.from_config(scheduler_config)
-        
-        action_embedding.load_state_dict(torch.load(os.path.join(args.model_folder, "action_embedding.pth")))
-
-        # Load embedding info
-        embedding_info = torch.load(os.path.join(args.model_folder, "embedding_info.pth"))
-        action_embedding.num_embeddings = embedding_info["num_embeddings"]
-        action_embedding.embedding_dim = embedding_info["embedding_dim"]
+        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(args.model_folder, 17)
 
     unet = unet.to(device)
     vae = vae.to(device)
@@ -503,8 +598,8 @@ if __name__ == "__main__":
 
     batch = next(iter(train_dataloader))
 
-    if skip_image_conditioning:
-        run_inference_with_params(
+
+    generate_autoregressive_rollout(
         unet,
         vae,
         noise_scheduler,
@@ -513,23 +608,9 @@ if __name__ == "__main__":
         text_encoder,
         batch,
         device=device,
+        num_frames=30,  # Adjust this to change the number of frames in the rollout
         skip_action_conditioning=skip_action_conditioning,
-        do_classifier_free_guidance=True,
-        guidance_scale=7.5,  # We keep the regular guidance scale since there's no image conditioning
+        do_classifier_free_guidance=False,
+        guidance_scale=1.5,
         num_inference_steps=50,
-        )
-    else:
-        run_inference_img_conditioning_with_params(
-            unet,
-            vae,
-            noise_scheduler,
-            action_embedding,
-            tokenizer,
-            text_encoder,
-            batch,
-            device=device,
-            skip_action_conditioning=skip_action_conditioning,
-            do_classifier_free_guidance=False,
-            guidance_scale=CFG_GUIDANCE_SCALE,
-            num_inference_steps=50,
-        )
+    )
