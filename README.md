@@ -52,6 +52,12 @@ python train_text_to_image.py \
     --report_to wandb
 ```
 
+## Run inference
+
+```
+python run_inference.py --model_folder arnaudstiegler/sd-model-gameNgen
+```
+
 
 ## Run training for original sd model
 ```

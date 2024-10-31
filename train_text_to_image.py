@@ -1099,7 +1099,7 @@ def main():
     if accelerator.is_main_process:
         save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
         if args.push_to_hub:
-            save_to_hub(args.repo_id, args.output_dir, args.dataset_name, validation_images, unet, vae, noise_scheduler, action_embedding)
+            save_to_hub(REPO_NAME, args.output_dir, args.dataset_name, validation_images, unet, vae, noise_scheduler, action_embedding)
 
     accelerator.end_training()
 
