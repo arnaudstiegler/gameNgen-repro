@@ -5,9 +5,10 @@ from transformers import CLIPTokenizer, CLIPTextModel
 from huggingface_hub import hf_hub_download
 from config_sd import BUFFER_SIZE
 from utils import NUM_BUCKETS
-from huggingface_hub import upload_folder
+from huggingface_hub import upload_folder, hf_hub_download
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from safetensors.torch import save_file, load_file
+import json
 
 
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
@@ -86,7 +87,7 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
 
 def load_model(model_folder: str):
-    embedding_info = load_file(os.path.join(model_folder, "embedding_info.safetensors"))
+    embedding_info = json.loads(hf_hub_download(model_folder, "embedding_info.json", repo_type="model"))
     action_dim = embedding_info["num_embeddings"]
     noise_scheduler = DDIMScheduler.from_pretrained(
         model_folder, subfolder="noise_scheduler"
@@ -101,7 +102,7 @@ def load_model(model_folder: str):
     action_embedding = torch.nn.Embedding(
         num_embeddings=action_dim + 1, embedding_dim=768
     )
-    action_embedding.load_state_dict(load_file(os.path.join(model_folder, "action_embedding_model.safetensors")))
+    action_embedding.load_state_dict(load_file(hf_hub_download(model_folder, "action_embedding_model.safetensors", repo_type="model")))
 
     assert noise_scheduler.config.prediction_type == "v_prediction", "Noise scheduler prediction type should be 'v_prediction'"
     assert unet.config.num_class_embeds == NUM_BUCKETS, f"UNet num_class_embeds should be {NUM_BUCKETS}"
@@ -171,8 +172,8 @@ def save_model(output_dir: str, unet, vae, noise_scheduler, action_embedding):
         "embedding_dim": action_embedding.embedding_dim
     }
 
-    save_file(embedding_info,
-                os.path.join(output_dir, "embedding_info.safetensors"))
+    with open(os.path.join(output_dir, "embedding_info.json"), "w") as f:
+        json.dump(embedding_info, f)
     unet = unet.to(torch.float32)
 
 def save_to_hub(repo_id: str, output_dir: str, dataset_name: str, validation_images: list[str] | None, unet: UNet2DConditionModel, vae: AutoencoderKL, noise_scheduler: DDIMScheduler, action_embedding: torch.nn.Embedding, should_save_model_card: bool = True):
@@ -191,8 +192,8 @@ def save_to_hub(repo_id: str, output_dir: str, dataset_name: str, validation_ima
         "embedding_dim": action_embedding.embedding_dim
     }
 
-    save_file(embedding_info,
-                os.path.join(output_dir, "embedding_info.safetensors"))
+    with open(os.path.join(output_dir, "embedding_info.json"), "w") as f:
+        json.dump(embedding_info, f)
 
     if should_save_model_card:
         save_model_card(
