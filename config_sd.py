@@ -25,4 +25,7 @@ VALIDATION_PROMPT = "video game doom image, high quality, 4k, high resolution"
 TRAINING_DATASET_DICT = {
     "small": "P-H-B-D-a16z/ViZDoom-Deathmatch-PPO",
     "large": "P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg",
+    "xlarge": "P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-XLrg",
+    "primitive": "P-H-B-D-a16z/ViZDoom-Deathmatch-Primitive",
+    "random_action": "P-H-B-D-a16z/ViZDoom-Deathmatch-RandomAction"
 }
