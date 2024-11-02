@@ -31,7 +31,7 @@ python train_text_to_image.py  \
     --num_train_epochs 1500  \
     --validation_steps 250  \
     --dataloader_num_workers 18 \
-    --max_train_samples 1 \
+    --max_train_samples 2 \
     --use_cfg \
     --report_to wandb
 ```

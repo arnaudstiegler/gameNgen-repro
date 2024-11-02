@@ -55,7 +55,7 @@ from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
-from sd3.model import save_model, save_to_hub
+from sd3.model import save_model, save_and_maybe_upload_to_hub
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -125,7 +125,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default=TRAINING_DATASET_DICT['large'],
+        default=TRAINING_DATASET_DICT['xlarge'],
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
@@ -449,11 +449,6 @@ def parse_args():
         raise ValueError("Need either a dataset name or a training folder.")
 
     return args
-
-
-DATASET_NAME_MAPPING = {
-    "lambdalabs/naruto-blip-captions": ("image", "text"),
-}
 
 
 def main():
@@ -1014,12 +1009,21 @@ def main():
                 if (global_step % args.validation_steps == 0):
                     accelerator.print("Generating validation image")
                     unet.eval()
-                    if accelerator.is_main_process:
+                    if accelerator.is_main_process:                        
+                        save_and_maybe_upload_to_hub(
+                            repo_id=REPO_NAME, 
+                            output_dir=args.output_dir, 
+                            unet=unet, 
+                            vae=vae, 
+                            noise_scheduler=noise_scheduler, 
+                            action_embedding=action_embedding, 
+                            should_upload_to_hub=args.push_to_hub,
+                            images=validation_images,
+                            dataset_name=args.dataset_name
+                        )
+
                         # Use the current batch for inference
                         # Generate 2 images
-                        
-                        # Save model locally
-                        save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
                         for i in range(2):  
                             single_sample_batch = {
                                 "pixel_values": batch["pixel_values"][i].unsqueeze(0),
@@ -1067,18 +1071,19 @@ def main():
                         if args.report_to == "wandb":
                             wandb.log(
                                 {
-                                    "validation_images": [
+                                    # The int index is used to order the images in the wandb dashboard
+                                    "1_validation_images": [
                                         wandb.Image(img, caption=f"Generated Image {i}")
                                         for i, img in enumerate(validation_images)
                                     ],
-                                    "context_images": [
+                                    "2_target_images": [
+                                        wandb.Image(target_img, caption=f"Target Image {i}")
+                                        for i, target_img in enumerate(target_images)
+                                    ],
+                                    "3_context_images": [
                                         wandb.Image(context_img, caption=f"Context Image {i}")
                                         for i, context_img in enumerate(context_images)
                                     ],
-                                    "target_images": [
-                                        wandb.Image(target_img, caption=f"Target Image {i}")
-                                        for i, target_img in enumerate(target_images)
-                                    ]
                                 },
                                 step=global_step
                             )
@@ -1097,9 +1102,17 @@ def main():
     accelerator.wait_for_everyone()
 
     if accelerator.is_main_process:
-        save_model(args.output_dir, unet, vae, noise_scheduler, action_embedding)
-        if args.push_to_hub:
-            save_to_hub(REPO_NAME, args.output_dir, args.dataset_name, validation_images, unet, vae, noise_scheduler, action_embedding)
+        save_and_maybe_upload_to_hub(
+            repo_id=REPO_NAME,
+            output_dir=args.output_dir,
+            unet=unet,
+            vae=vae,
+            noise_scheduler=noise_scheduler,
+            action_embedding=action_embedding,
+            should_upload_to_hub=args.push_to_hub,
+            images=validation_images,
+            dataset_name=args.dataset_name
+        )
 
     accelerator.end_training()
 

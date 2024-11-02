@@ -1,5 +1,6 @@
 import os
 import torch
+import textwrap
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDIMScheduler
 from transformers import CLIPTokenizer, CLIPTextModel
 from huggingface_hub import hf_hub_download
@@ -15,64 +16,81 @@ PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 
 
 def get_ft_vae_decoder():
-    '''
+    """
     Based on the original GameNGen code, the vae decoder is finetuned on images from the
     training set to improve the quality of the images.
-    '''
-    file_path = hf_hub_download(repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth")
-    decoder_state_dict = torch.load(file_path)
+    """
+    file_path = hf_hub_download(
+        repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth"
+    )
+    decoder_state_dict = torch.load(file_path, weights_only=True)
     return decoder_state_dict
 
 
-def get_model(action_dim: int, skip_image_conditioning: bool = False):
-    # Max number of actions in the action space
+def get_model(
+    action_embedding_dim: int, skip_image_conditioning: bool = False
+) -> tuple[
+    UNet2DConditionModel,
+    AutoencoderKL,
+    torch.nn.Embedding,
+    DDIMScheduler,
+    CLIPTokenizer,
+    CLIPTextModel,
+]:
+    """
+    Args:
+        action_embedding_dim: the dimension of the action embedding, i.e the number of possible actions + 1 (do nothing action)
+        skip_image_conditioning: whether to skip image conditioning
+    """
 
     # This will be used to encode the actions
-    action_embedding = torch.nn.Embedding(num_embeddings=action_dim + 1,
-                                          embedding_dim=768)
+    action_embedding = torch.nn.Embedding(
+        num_embeddings=action_embedding_dim + 1, embedding_dim=768
+    )
 
     # DDIM scheduler allows for v-prediction and less sampling steps
     noise_scheduler = DDIMScheduler.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="scheduler")
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="scheduler"
+    )
     # This is what the paper uses
     noise_scheduler.register_to_config(prediction_type="v_prediction")
 
-    vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                        subfolder="vae")
+    vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="vae")
     decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
 
-
-    unet = UNet2DConditionModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                                subfolder="unet")
+    unet = UNet2DConditionModel.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="unet"
+    )
     # There are 10 noise buckets total
     unet.register_to_config(num_class_embeds=NUM_BUCKETS)
     # We do not use .add_module() because the class_embedding is already initialized as None
-    unet.class_embedding = torch.nn.Embedding(NUM_BUCKETS, unet.time_embedding.linear_2.out_features)
+    unet.class_embedding = torch.nn.Embedding(
+        NUM_BUCKETS, unet.time_embedding.linear_2.out_features
+    )
 
-    tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                              subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH,
-                                                 subfolder="text_encoder")
+    tokenizer = CLIPTokenizer.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer"
+    )
+    text_encoder = CLIPTextModel.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
+    )
 
     if not skip_image_conditioning:
-        """
-        This is to accomodate concatenating previous frames in the channels dimension
-        """
+        # This is to accomodate concatenating previous frames in the channels dimension
         new_in_channels = 4 * (BUFFER_SIZE + 1)
         old_conv_in = unet.conv_in
-        new_conv_in = torch.nn.Conv2d(new_in_channels,
-                                      320,
-                                      kernel_size=(3, 3),
-                                      stride=(1, 1),
-                                      padding=(1, 1))
+        new_conv_in = torch.nn.Conv2d(
+            new_in_channels, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
+        )
 
         # Initialize the new conv layer with the weights from the old one
         with torch.no_grad():
             new_conv_in.weight[:, :4, :, :] = old_conv_in.weight
             # Initialize new channels to random values
             new_conv_in.weight[:, 4:, :, :] = torch.randn_like(
-                new_conv_in.weight[:, 4:, :, :])
+                new_conv_in.weight[:, 4:, :, :]
+            )
 
             new_conv_in.bias = old_conv_in.bias
 
@@ -86,33 +104,141 @@ def get_model(action_dim: int, skip_image_conditioning: bool = False):
     text_encoder.requires_grad_(False)
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
 
-def load_model(model_folder: str):
-    embedding_info = json.loads(hf_hub_download(model_folder, "embedding_info.json", repo_type="model"))
-    action_dim = embedding_info["num_embeddings"]
+
+def load_embedding_info_dict(model_folder: str) -> dict:
+    if os.path.exists(model_folder):
+        with open(os.path.join(model_folder, "embedding_info.json"), "r") as f:
+            embedding_info = json.load(f)
+    else:
+        file_path = hf_hub_download(
+            repo_id=model_folder, filename="embedding_info.json", repo_type="model"
+        )
+        with open(file_path, "r") as f:
+            embedding_info = json.load(f)
+    return embedding_info
+
+
+def load_action_embedding(
+    model_folder: str, action_num_embeddings: int
+) -> torch.nn.Embedding:
+    action_embedding = torch.nn.Embedding(
+        num_embeddings=action_num_embeddings, embedding_dim=768
+    )
+    if os.path.exists(model_folder):
+        action_embedding.load_state_dict(
+            load_file(os.path.join(model_folder, "action_embedding_model.safetensors"))
+        )
+    else:
+        file_path = hf_hub_download(
+            repo_id=model_folder,
+            filename="action_embedding_model.safetensors",
+            repo_type="model",
+        )
+        action_embedding.load_state_dict(load_file(file_path))
+    return action_embedding
+
+
+def load_model(
+    model_folder: str,
+) -> tuple[
+    UNet2DConditionModel,
+    AutoencoderKL,
+    torch.nn.Embedding,
+    DDIMScheduler,
+    CLIPTokenizer,
+    CLIPTextModel,
+]:
+    """
+    Load a model from the hub
+
+    Args:
+        model_folder: the folder to load the model from, can be a model id or a local folder
+    """
+    embedding_info = load_embedding_info_dict(model_folder)
+    action_embedding = load_action_embedding(
+        model_folder=model_folder,
+        action_num_embeddings=embedding_info["num_embeddings"],
+    )
+
     noise_scheduler = DDIMScheduler.from_pretrained(
         model_folder, subfolder="noise_scheduler"
     )
 
-    vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae", map_location=torch.device('cpu'))
+    vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae")
     decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
-    unet = UNet2DConditionModel.from_pretrained(
-        model_folder, subfolder="unet"
-    )
-    action_embedding = torch.nn.Embedding(
-        num_embeddings=action_dim + 1, embedding_dim=768
-    )
-    action_embedding.load_state_dict(load_file(hf_hub_download(model_folder, "action_embedding_model.safetensors", repo_type="model")))
 
-    assert noise_scheduler.config.prediction_type == "v_prediction", "Noise scheduler prediction type should be 'v_prediction'"
-    assert unet.config.num_class_embeds == NUM_BUCKETS, f"UNet num_class_embeds should be {NUM_BUCKETS}"
+    unet = UNet2DConditionModel.from_pretrained(model_folder, subfolder="unet")
+
+    assert (
+        noise_scheduler.config.prediction_type == "v_prediction"
+    ), "Noise scheduler prediction type should be 'v_prediction'"
+    assert (
+        unet.config.num_class_embeds == NUM_BUCKETS
+    ), f"UNet num_class_embeds should be {NUM_BUCKETS}"
 
     # Unaltered
-    tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer")
+    tokenizer = CLIPTokenizer.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer"
+    )
     text_encoder = CLIPTextModel.from_pretrained(
         PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
     )
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
+
+
+def save_model(
+    output_dir: str,
+    unet: UNet2DConditionModel,
+    vae: AutoencoderKL,
+    noise_scheduler: DDIMScheduler,
+    action_embedding: torch.nn.Embedding,
+) -> None:
+    unet.save_pretrained(os.path.join(output_dir, "unet"))
+    vae.save_pretrained(os.path.join(output_dir, "vae"))
+    noise_scheduler.save_pretrained(os.path.join(output_dir, "noise_scheduler"))
+    save_file(
+        action_embedding.state_dict(),
+        os.path.join(output_dir, "action_embedding_model.safetensors"),
+    )
+
+    # Save embedding dimensions
+    embedding_info = {
+        "num_embeddings": action_embedding.num_embeddings,
+        "embedding_dim": action_embedding.embedding_dim,
+    }
+
+    with open(os.path.join(output_dir, "embedding_info.json"), "w") as f:
+        json.dump(embedding_info, f)
+
+
+def save_and_maybe_upload_to_hub(
+    repo_id: str,
+    output_dir: str,
+    unet: UNet2DConditionModel,
+    vae: AutoencoderKL,
+    noise_scheduler: DDIMScheduler,
+    action_embedding: torch.nn.Embedding,
+    should_upload_to_hub: bool = True,
+    images: list = None,
+    dataset_name: str = None,
+) -> None:
+    save_model(output_dir, unet, vae, noise_scheduler, action_embedding)
+
+    if should_upload_to_hub:
+        upload_folder(
+            repo_id=repo_id,
+            folder_path=output_dir,
+            commit_message="End of training",
+            ignore_patterns=["step_*", "epoch_*"],
+        )
+        save_model_card(
+            repo_id=repo_id,
+            images=images,
+            base_model=PRETRAINED_MODEL_NAME_OR_PATH,
+            dataset_name=dataset_name,
+            repo_folder=output_dir,
+        )
 
 
 def save_model_card(
@@ -128,11 +254,11 @@ def save_model_card(
             image.save(os.path.join(repo_folder, f"image_{i}.png"))
             img_str += f"![img_{i}](./image_{i}.png)\n"
 
-    model_description = f"""
-# GameNgen fine-tuning - {repo_id}
-Full finetune of {base_model}. The weights were fine-tuned on the {dataset_name} dataset. You can find some example images in the following. \n
-{img_str}
-"""
+    model_description = textwrap.dedent(f"""
+        # GameNgen fine-tuning - {repo_id}
+        Full finetune of {base_model}. The weights were fine-tuned on the {dataset_name} dataset. You can find some example images in the following. \n
+        {img_str}
+        """)
 
     model_card = load_or_create_model_card(
         repo_id_or_path=repo_id,
@@ -153,59 +279,3 @@ Full finetune of {base_model}. The weights were fine-tuned on the {dataset_name}
     model_card = populate_model_card(model_card, tags=tags)
 
     model_card.save(os.path.join(repo_folder, "README.md"))
-
-
-def save_model(output_dir: str, unet, vae, noise_scheduler, action_embedding):
-    unet.save_pretrained(os.path.join(output_dir, "unet"))
-    vae.save_pretrained(os.path.join(output_dir, "vae"))
-    noise_scheduler.save_pretrained(
-        os.path.join(output_dir, "noise_scheduler"))
-    save_file(
-        action_embedding.state_dict(),
-        os.path.join(output_dir,
-                        "action_embedding_model.safetensors"),
-    )
-
-    # Save embedding dimensions
-    embedding_info = {
-        "num_embeddings": action_embedding.num_embeddings,
-        "embedding_dim": action_embedding.embedding_dim
-    }
-
-    with open(os.path.join(output_dir, "embedding_info.json"), "w") as f:
-        json.dump(embedding_info, f)
-    unet = unet.to(torch.float32)
-
-def save_to_hub(repo_id: str, output_dir: str, dataset_name: str, validation_images: list[str] | None, unet: UNet2DConditionModel, vae: AutoencoderKL, noise_scheduler: DDIMScheduler, action_embedding: torch.nn.Embedding, should_save_model_card: bool = True):
-    unet.save_pretrained(os.path.join(output_dir, "unet"))
-    vae.save_pretrained(os.path.join(output_dir, "vae"))
-    save_file(
-        action_embedding.state_dict(),
-        os.path.join(output_dir,
-                        "action_embedding_model.safetensors"),
-    )
-    noise_scheduler.save_pretrained(
-        os.path.join(output_dir, "noise_scheduler"))
-    
-    embedding_info = {
-        "num_embeddings": action_embedding.num_embeddings,
-        "embedding_dim": action_embedding.embedding_dim
-    }
-
-    with open(os.path.join(output_dir, "embedding_info.json"), "w") as f:
-        json.dump(embedding_info, f)
-
-    if should_save_model_card:
-        save_model_card(
-            repo_id,
-            images=validation_images if validation_images else [],
-            base_model=PRETRAINED_MODEL_NAME_OR_PATH,
-            dataset_name=dataset_name,
-            repo_folder=output_dir,
-        )
-    upload_folder(
-        repo_id=repo_id,
-        folder_path=output_dir,
-        commit_message="End of training",
-        ignore_patterns=["step_*", "epoch_*"],
-    )
