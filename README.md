@@ -37,7 +37,7 @@ python train_text_to_image.py  \
 Full training
 ```
 python train_text_to_image.py \
-    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-XLrg \
+    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg \
     --gradient_checkpointing \
     --learning_rate 5e-5 \
     --train_batch_size 12 \
