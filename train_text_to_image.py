@@ -125,7 +125,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default=TRAINING_DATASET_DICT['xlarge'],
+        default=TRAINING_DATASET_DICT['small'],
         help=(
             "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
