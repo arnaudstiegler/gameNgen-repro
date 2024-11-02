@@ -14,9 +14,7 @@
 
 ## Datasets
 
-Test dataset: `arnaudstiegler/gameNgen_test_dataset`
-Training dataset (small): `P-H-B-D-a16z/ViZDoom-Deathmatch-PPO`
-Training dataset (large): `P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg`
+See: `config_sd.py` for the datasets used in the experiments.
 
 
 ## Run training on gameNgen
@@ -24,14 +22,14 @@ Training dataset (large): `P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg`
 Debug on a single sample
 ```
 python train_text_to_image.py  \
-    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg  \
+    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO  \
     --gradient_checkpointing  \
     --train_batch_size 12  \
     --learning_rate 5e-5  \
     --num_train_epochs 1500  \
     --validation_steps 250  \
     --dataloader_num_workers 18 \
-    --max_train_samples 1 \
+    --max_train_samples 2 \
     --use_cfg \
     --report_to wandb
 ```
@@ -45,11 +43,17 @@ python train_text_to_image.py \
     --train_batch_size 12 \
     --dataloader_num_workers 18 \
     --num_train_epochs 10 \
-    --validation_steps 250 \
+    --validation_steps 1000 \
     --use_cfg \
     --output_dir sd-model-finetuned \
     --push_to_hub \
     --report_to wandb
+```
+
+## Run inference
+
+```
+python run_inference.py --model_folder arnaudstiegler/sd-model-gameNgen
 ```
 
 

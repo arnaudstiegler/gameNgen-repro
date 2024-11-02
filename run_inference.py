@@ -2,106 +2,25 @@ import argparse
 import base64
 import io
 import random
-from typing import List, Optional
 
 import numpy as np
 import torch
-from datasets import DatasetDict, load_dataset
-from diffusers import (AutoencoderKL, DDIMScheduler, DDPMScheduler,
-                       UNet2DConditionModel)
+from datasets import load_dataset
+from diffusers import AutoencoderKL, DDPMScheduler
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.utils.torch_utils import randn_tensor
-from huggingface_hub import hf_hub_download
 from PIL import Image
-from safetensors import safe_open
 from torchvision import transforms
-from tqdm import tqdm
-from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
-import os
-from config_sd import BUFFER_SIZE, HEIGHT, REPO_NAME, WIDTH, VALIDATION_PROMPT, TRAINING_DATASET_DICT, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE
+from config_sd import BUFFER_SIZE, HEIGHT, WIDTH, VALIDATION_PROMPT, TRAINING_DATASET_DICT, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE
 from sd3.model import get_model, load_model
-from functools import partial
 from torch.amp import autocast
-from safetensors.torch import load_file
-import json
 from data_augmentation import no_img_conditioning_augmentation
+from sd3.model import load_model
 
 
 torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
-
-repo_name = "CompVis/stable-diffusion-v1-4"
-
-
-def read_action_embedding_from_safetensors(file_path: str):
-    with safe_open(file_path, framework="pt", device="cpu") as f:
-        embedding_weight = f.get_tensor("weight")
-
-    num_embeddings, embedding_dim = embedding_weight.shape
-    action_embedding = torch.nn.Embedding(num_embeddings, embedding_dim)
-    action_embedding.weight.data = embedding_weight
-    return action_embedding
-
-
-def encode_prompt(
-    tokenizer: CLIPTokenizer,
-    text_encoder: CLIPTextModel,
-    prompts: List[str],
-    negative_prompt: List[str],
-    batch_size: int,
-    device: str,
-    do_classifier_free_guidance: bool,
-    num_images_per_prompt: int,
-):
-    assert isinstance(prompts, list), f"Expected list but received: {type(prompts)}"
-    text_inputs = tokenizer(
-        prompts,
-        padding="max_length",
-        max_length=tokenizer.model_max_length,
-        truncation=True,
-        return_tensors="pt",
-    )
-    # NB: the diffusers pipeline is seemingly not using attention_masks for the text encoder
-    prompt_embeds = text_encoder(text_inputs.input_ids.to(device))
-    prompt_embeds = prompt_embeds[0]
-
-    bs_embed, seq_len, _ = prompt_embeds.shape
-    # duplicate text embeddings for each generation per prompt, using mps friendly method
-    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-    prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
-
-    prompt_embeds_dtype = prompt_embeds.dtype
-
-    if do_classifier_free_guidance:
-        uncond_tokens = [""] * batch_size if not negative_prompt else negative_prompt
-        uncond_input = tokenizer(
-            uncond_tokens,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        negative_prompt_embeds = text_encoder(uncond_input.input_ids.to(device))
-        negative_prompt_embeds = negative_prompt_embeds[0]
-
-        seq_len = negative_prompt_embeds.shape[1]
-
-        negative_prompt_embeds = negative_prompt_embeds.to(
-            dtype=prompt_embeds_dtype, device=device
-        )
-
-        negative_prompt_embeds = negative_prompt_embeds.repeat(
-            1, num_images_per_prompt, 1
-        )
-        negative_prompt_embeds = negative_prompt_embeds.view(
-            batch_size * num_images_per_prompt, seq_len, -1
-        )
-
-    else:
-        negative_prompt_embeds = None
-
-    return prompt_embeds, negative_prompt_embeds
 
 
 def encode_conditioning_frames(
@@ -517,11 +436,11 @@ if __name__ == "__main__":
         else "cpu"
     )
 
-    dataset = load_dataset("P-H-B-D-a16z/ViZDoom-Deathmatch-PPO")
-    if not args.model_folder:
-        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=skip_image_conditioning)
+    dataset = load_dataset(TRAINING_DATASET_DICT['large'])
+    if not model_folder:
+        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(action_embedding_dim=17, skip_image_conditioning=skip_image_conditioning)
     else:
-        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(args.model_folder, 17)
+        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(model_folder)
 
     unet = unet.to(device)
     vae = vae.to(device)
@@ -560,7 +479,7 @@ if __name__ == "__main__":
         def create_black_screen(height, width):
             return torch.zeros(3, height, width, dtype=torch.float32)
 
-        if not args.skip_image_conditioning:
+        if not skip_image_conditioning:
             # Process each example
             processed_images = []
             for example in examples:
@@ -582,10 +501,8 @@ if __name__ == "__main__":
             images = images.to(memory_format=torch.contiguous_format).float()
         return {
             "pixel_values": images,
-            "input_ids": torch.stack([torch.tensor(example["input_ids"][:BUFFER_SIZE+1]) for example in examples]),
+            "input_ids": torch.stack([example["input_ids"][:BUFFER_SIZE+1].clone().detach() for example in examples]),
         }
-
-    # collate_fn = partial(collate_fn, skip_image_conditioning)
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -598,8 +515,8 @@ if __name__ == "__main__":
 
     batch = next(iter(train_dataloader))
 
-
-    generate_autoregressive_rollout(
+    if skip_image_conditioning:
+        img = run_inference_with_params(
         unet,
         vae,
         noise_scheduler,
@@ -613,4 +530,34 @@ if __name__ == "__main__":
         do_classifier_free_guidance=False,
         guidance_scale=1.5,
         num_inference_steps=50,
+        )
+    else:
+        img = run_inference_img_conditioning_with_params(
+            unet,
+            vae,
+            noise_scheduler,
+            action_embedding,
+            tokenizer,
+            text_encoder,
+            batch,
+            device=device,
+            skip_action_conditioning=skip_action_conditioning,
+            do_classifier_free_guidance=False,
+            guidance_scale=CFG_GUIDANCE_SCALE,
+            num_inference_steps=50,
+        )
+    img.save("output.png")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run inference with customizable parameters")
+    parser.add_argument("--skip_image_conditioning", action="store_true", help="Skip image conditioning")
+    parser.add_argument("--skip_action_conditioning", action="store_true", help="Skip action conditioning")
+    parser.add_argument("--model_folder", type=str, help="Path to the folder containing the model weights")
+    args = parser.parse_args()
+
+    main(
+        model_folder=args.model_folder,
+        skip_image_conditioning=args.skip_image_conditioning,
+        skip_action_conditioning=args.skip_action_conditioning,
     )
