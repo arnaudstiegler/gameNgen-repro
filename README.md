@@ -50,10 +50,16 @@ python train_text_to_image.py \
     --report_to wandb
 ```
 
-## Run inference
+## Run inference (generating a single image)
 
 ```
 python run_inference.py --model_folder arnaudstiegler/sd-model-gameNgen
+```
+
+## Run autoregressive inference
+
+```
+python run_autoregressive.py --model_folder arnaudstiegler/sd-model-gameNgen --num_frames 20
 ```
 
 

@@ -3,20 +3,14 @@ import torch
 import torchvision.transforms as transforms
 from PIL import Image
 import random
-import os
-from run_inference import run_inference_img_conditioning_with_params
 from sd3.model import load_model
-import json
 import io
 import base64
-import numpy as np
 from datasets import load_dataset
 from config_sd import HEIGHT, WIDTH, BUFFER_SIZE, ZERO_OUT_ACTION_CONDITIONING_PROB
 from data_augmentation import no_img_conditioning_augmentation
-from sd3.model import get_model
+from sd3.model import load_model
 from config_sd import CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
-from diffusers import DDIMScheduler
-from safetensors.torch import load_file
 from diffusers.image_processor import VaeImageProcessor
 from run_inference import next_latent
 
@@ -40,14 +34,8 @@ from run_inference import next_latent
 # Action 16: MOVE_FORWARD + MOVE_LEFT + TURN_RIGHT
 # Action 17: ATTACK
 
-if __name__ == "__main__":
-    # TODO: extract all that to a main function
-    parser = argparse.ArgumentParser(description="Run inference with customizable parameters")
-    parser.add_argument("--model_folder", type=str, help="Path to the folder containing the model weights")
-    parser.add_argument("--num_frames", type=int, help="Number of frames to generate", default=20)
-    args = parser.parse_args()
 
-
+def main(model_folder: str, num_frames: int) -> None:
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -57,25 +45,7 @@ if __name__ == "__main__":
     )
 
     dataset = load_dataset(TRAINING_DATASET_DICT['small'])
-    if not args.model_folder:
-        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(17, skip_image_conditioning=False)
-    else:
-        unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
-        17, skip_image_conditioning=False)
-        unet.load_state_dict(load_file(os.path.join(args.model_folder, "unet", "diffusion_pytorch_model.safetensors")))
-        vae.load_state_dict(load_file(os.path.join(args.model_folder, "vae", "diffusion_pytorch_model.safetensors")))
-        
-        # Load scheduler configuration
-        with open(os.path.join(args.model_folder, "scheduler", "scheduler_config.json"), "r") as f:
-            scheduler_config = json.load(f)
-        noise_scheduler = DDIMScheduler.from_config(scheduler_config)
-        
-        action_embedding.load_state_dict(torch.load(os.path.join(args.model_folder, "action_embedding.pth")))
-
-        # Load embedding info
-        embedding_info = torch.load(os.path.join(args.model_folder, "embedding_info.pth"))
-        action_embedding.num_embeddings = embedding_info["num_embeddings"]
-        action_embedding.embedding_dim = embedding_info["embedding_dim"]
+    unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(model_folder)
 
     unet = unet.to(device)
     vae = vae.to(device)
@@ -179,17 +149,15 @@ if __name__ == "__main__":
     current_actions = batch["input_ids"].squeeze(0)[:BUFFER_SIZE].to(device)
 
     # Autoregressive rollout
-    for i in range(args.num_frames):
+    for i in range(num_frames):
         print(f"Generating frame {i}")
         # Generate next frame latents
         target_latents = next_latent(
-            unet,
-            vae,
-            noise_scheduler,
-            action_embedding,
-            tokenizer,
-            text_encoder,
-            context_latents,
+            unet=unet,
+            vae=vae,
+            noise_scheduler=noise_scheduler,
+            action_embedding=action_embedding,
+            context_latents=context_latents,
             device=device,
             skip_action_conditioning=False,
             do_classifier_free_guidance=False,
@@ -232,4 +200,13 @@ if __name__ == "__main__":
         loop=0
     )
 
+
+if __name__ == "__main__":
+    # TODO: extract all that to a main function
+    parser = argparse.ArgumentParser(description="Run inference with customizable parameters")
+    parser.add_argument("--model_folder", type=str, help="Path to the folder containing the model weights")
+    parser.add_argument("--num_frames", type=int, help="Number of frames to generate", default=20)
+    args = parser.parse_args()
+
+    main(model_folder=args.model_folder, num_frames=args.num_frames)
 
