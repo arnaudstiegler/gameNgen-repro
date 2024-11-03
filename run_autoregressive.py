@@ -8,6 +8,10 @@ from diffusers.image_processor import VaeImageProcessor
 from dataset import get_single_batch
 from run_inference import next_latent, encode_conditioning_frames
 import numpy as np
+from PIL import Image
+from loguru import logger
+
+
 # Action 0: TURN_LEFT
 # Action 1: TURN_RIGHT
 # Action 2: MOVE_RIGHT
@@ -27,46 +31,30 @@ import numpy as np
 # Action 16: MOVE_FORWARD + MOVE_LEFT + TURN_RIGHT
 # Action 17: ATTACK
 
+'''
+0: ?
+1: right
+2: move right
+3: unclear
+4: ?
+5: move left
+6: turn left
+7: turn right?
+
+'''
+
 torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
 
 
-def main(model_folder: str, num_frames: int) -> None:
-    device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
-
-    unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
-        model_folder, device=device
-    )
-
-    batch = get_single_batch(TRAINING_DATASET_DICT["small"])
-
-    vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
-    image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-
-    # Encode initial context frames
-    context_latents = encode_conditioning_frames(
-        vae,
-        images=batch["pixel_values"],
-        vae_scale_factor=vae_scale_factor,
-        dtype=torch.float32,
-    )
-
-    # Store all generated latents - split context frames into individual tensors
-    initial_context = context_latents.squeeze(0)  # [BUFFER_SIZE, 4, 30, 40]
-    all_latents = [
-        initial_context[i : i + 1] for i in range(initial_context.shape[0])
-    ]  # List of [1, 4, 30, 40] tensors
-    current_actions = batch["input_ids"].squeeze(0)[:BUFFER_SIZE].to(device)
-
-    # Autoregressive rollout
-    for i in range(num_frames):
+def generate_rollout(unet, vae, action_embedding, noise_scheduler, image_processor, actions: list[int], initial_frame_context: torch.Tensor, initial_action_context: torch.Tensor) -> list[Image]:
+    device = unet.device
+    all_latents = []
+    current_actions = initial_action_context
+    context_latents = initial_frame_context
+    
+    for i in range(len(actions)):
         print(f"Generating frame {i}")
         # Generate next frame latents
         target_latents = next_latent(
@@ -74,7 +62,7 @@ def main(model_folder: str, num_frames: int) -> None:
             vae=vae,
             noise_scheduler=noise_scheduler,
             action_embedding=action_embedding,
-            context_latents=context_latents,
+            context_latents=context_latents.unsqueeze(0),
             device=device,
             skip_action_conditioning=False,
             do_classifier_free_guidance=False,
@@ -82,23 +70,14 @@ def main(model_folder: str, num_frames: int) -> None:
             num_inference_steps=50,
             actions=current_actions.unsqueeze(0),
         )
-
-        # Append new latents
         all_latents.append(target_latents)
-
-        # Generate random action for next step
-        next_action = torch.tensor([random.randint(0, 17)], device=device)
-        # next_action = torch.tensor([8]).to(device)
-        current_actions = torch.cat([current_actions[1:], next_action])
+        current_actions = torch.cat([current_actions[(-BUFFER_SIZE+1):], torch.tensor([actions[i]]).to(device)])
 
         # Update context latents using sliding window
         # Always take exactly BUFFER_SIZE most recent frames
-        latest_frames = torch.cat(
-            all_latents[-BUFFER_SIZE:], dim=0
-        )  # [BUFFER_SIZE, 4, 30, 40]
-        context_latents = latest_frames.unsqueeze(
-            0
-        )  # Add batch dimension [1, BUFFER_SIZE, 4, 30, 40]
+        context_latents = torch.cat(
+            [context_latents[(-BUFFER_SIZE+1):], target_latents], dim=0
+        )
 
     # Decode all latents to images
     all_images = []
@@ -109,15 +88,66 @@ def main(model_folder: str, num_frames: int) -> None:
             image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
         )[0]
         all_images.append(image)
+    return all_images
 
-    # Save as GIF
-    all_images[0].save(
-        "autoregressive_rollout.gif",
-        save_all=True,
-        append_images=all_images[1:],
-        duration=100,  # 100ms per frame
-        loop=0,
+
+def main(model_folder: str) -> None:
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
     )
+    
+    scenarios = {
+
+        # 'forward': [8]*15,
+        # 'forward_right_attack': [8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 17],
+        # 'forward_left_attack': [8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 17],
+        'forward_attack_forward_attack': [8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8],
+    }
+
+    batch = get_single_batch(TRAINING_DATASET_DICT["small"])
+    for scenario_name, actions in scenarios.items():
+        unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
+            model_folder, device=device
+    )
+        logger.info(f"Generating rollout forscenario {scenario_name}")
+
+        vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+        image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
+
+        # Encode initial context frames
+        context_latents = encode_conditioning_frames(
+            vae,
+            images=batch["pixel_values"],
+            vae_scale_factor=vae_scale_factor,
+            dtype=torch.float32,
+        )
+
+        # Store all generated latents - split context frames into individual tensors
+        initial_frame_context = context_latents.squeeze(0)  # [BUFFER_SIZE, 4, 30, 40]
+        initial_action_context = batch["input_ids"].squeeze(0)[:BUFFER_SIZE].to(device)
+        
+        all_images = generate_rollout(
+            unet=unet,
+            vae=vae,
+            action_embedding=action_embedding,
+            noise_scheduler=noise_scheduler,
+            image_processor=image_processor,
+            actions=actions,
+            initial_frame_context=initial_frame_context,
+            initial_action_context=initial_action_context,
+        )
+
+        all_images[0].save(
+            f"rollout_{scenario_name}.gif",
+            save_all=True,
+            append_images=all_images[1:],
+            duration=100,  # 100ms per frame
+            loop=0,
+        )
 
 
 if __name__ == "__main__":
@@ -130,9 +160,6 @@ if __name__ == "__main__":
         type=str,
         help="Path to the folder containing the model weights",
     )
-    parser.add_argument(
-        "--num_frames", type=int, help="Number of frames to generate", default=20
-    )
     args = parser.parse_args()
 
-    main(model_folder=args.model_folder, num_frames=args.num_frames)
+    main(model_folder=args.model_folder)
