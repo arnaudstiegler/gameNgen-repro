@@ -1,16 +1,21 @@
 import argparse
-import torch
 import random
-from sd3.model import load_model
-from config_sd import BUFFER_SIZE
-from config_sd import CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
-from diffusers.image_processor import VaeImageProcessor
-from dataset import get_single_batch
-from run_inference import next_latent, encode_conditioning_frames, decode_and_postprocess
+
 import numpy as np
-from PIL import Image
+import torch
+from diffusers.image_processor import VaeImageProcessor
 from loguru import logger
+from PIL import Image
 from tqdm import tqdm
+
+from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
+from dataset import get_single_batch
+from run_inference import (
+    decode_and_postprocess,
+    encode_conditioning_frames,
+    next_latent,
+)
+from sd3.model import load_model
 
 # Action 0: TURN_LEFT
 # Action 1: TURN_RIGHT
@@ -31,7 +36,7 @@ from tqdm import tqdm
 # Action 16: MOVE_FORWARD + MOVE_LEFT + TURN_RIGHT
 # Action 17: ATTACK
 
-'''
+"""
 0: ?
 1: right
 2: move right
@@ -41,19 +46,28 @@ from tqdm import tqdm
 6: turn left
 7: turn right?
 
-'''
+"""
 
 torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
 
 
-def generate_rollout(unet, vae, action_embedding, noise_scheduler, image_processor, actions: list[int], initial_frame_context: torch.Tensor, initial_action_context: torch.Tensor) -> list[Image]:
+def generate_rollout(
+    unet,
+    vae,
+    action_embedding,
+    noise_scheduler,
+    image_processor,
+    actions: list[int],
+    initial_frame_context: torch.Tensor,
+    initial_action_context: torch.Tensor,
+) -> list[Image]:
     device = unet.device
     all_latents = []
     current_actions = initial_action_context
     context_latents = initial_frame_context
-    
+
     for i in tqdm(range(len(actions))):
         # Generate next frame latents
         target_latents = next_latent(
@@ -70,18 +84,27 @@ def generate_rollout(unet, vae, action_embedding, noise_scheduler, image_process
             actions=current_actions.unsqueeze(0),
         )
         all_latents.append(target_latents)
-        current_actions = torch.cat([current_actions[(-BUFFER_SIZE+1):], torch.tensor([actions[i]]).to(device)])
+        current_actions = torch.cat(
+            [
+                current_actions[(-BUFFER_SIZE + 1) :],
+                torch.tensor([actions[i]]).to(device),
+            ]
+        )
 
         # Update context latents using sliding window
         # Always take exactly BUFFER_SIZE most recent frames
         context_latents = torch.cat(
-            [context_latents[(-BUFFER_SIZE+1):], target_latents], dim=0
+            [context_latents[(-BUFFER_SIZE + 1) :], target_latents], dim=0
         )
 
     # Decode all latents to images
     all_images = []
     for latent in all_latents[BUFFER_SIZE:]:  # Skip the initial context frames
-        all_images.append(decode_and_postprocess(vae=vae, image_processor=image_processor, latents=latent))
+        all_images.append(
+            decode_and_postprocess(
+                vae=vae, image_processor=image_processor, latents=latent
+            )
+        )
     return all_images
 
 
@@ -93,12 +116,35 @@ def main(model_folder: str) -> None:
         if torch.backends.mps.is_available()
         else "cpu"
     )
-    
-    scenarios = {
 
+    scenarios = {
         # TODO: add more scenarios
         # 'only_forward': [8]*30,
-        'forward_attack_forward_attack': [1, 1, 1, 1, 8, 8, 8, 8, 8, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,8,8,8],
+        "forward_attack_forward_attack": [
+            1,
+            1,
+            1,
+            1,
+            8,
+            8,
+            8,
+            8,
+            8,
+            17,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+            8,
+        ],
     }
 
     batch = get_single_batch(TRAINING_DATASET_DICT["small"])
@@ -122,7 +168,7 @@ def main(model_folder: str) -> None:
         # Store all generated latents - split context frames into individual tensors
         initial_frame_context = context_latents.squeeze(0)  # [BUFFER_SIZE, 4, 30, 40]
         initial_action_context = batch["input_ids"].squeeze(0)[:BUFFER_SIZE].to(device)
-        
+
         all_images = generate_rollout(
             unet=unet,
             vae=vae,
