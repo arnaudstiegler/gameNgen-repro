@@ -48,7 +48,7 @@ import io
 
 from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
 import wandb
-from run_inference import run_inference_with_params, run_inference_img_conditioning_with_params
+from run_inference import run_inference_img_conditioning_with_params
 from data_augmentation import no_img_conditioning_augmentation
 from datasets import load_dataset, DatasetDict
 from safetensors.torch import load_file
@@ -511,7 +511,7 @@ def main():
                                   token=args.hub_token).repo_id
 
     # This is a bit wasteful
-    dataset = get_dataset(args.dataset_name)
+    dataset = load_dataset(args.dataset_name)
     action_dim = max(max(actions) for actions in dataset['train']['actions'])
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
@@ -670,7 +670,7 @@ def main():
 
     logger.info("***** Running training *****")
     logger.info(f"  Dataset = {args.dataset_name}")
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num examples = {len(dataset['train'])}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(
         f"  Instantaneous batch size per device = {args.train_batch_size}")
@@ -939,21 +939,7 @@ def main():
                             }
                             with torch.no_grad():
                                 if args.skip_image_conditioning:
-                                    generated_image = run_inference_with_params(
-                                        unet=accelerator.unwrap_model(unet),
-                                        vae=vae,
-                                        noise_scheduler=noise_scheduler,
-                                        action_embedding=action_embedding,
-                                        tokenizer=tokenizer,
-                                        text_encoder=text_encoder,
-                                        batch=single_sample_batch,
-                                        device=accelerator.device,
-                                        num_inference_steps=50,
-                                        do_classifier_free_guidance=args.use_cfg,
-                                        guidance_scale=7.5,  # We keep the regular guidance scale since there's no image conditioning
-                                        skip_action_conditioning=args.
-                                        skip_action_conditioning,
-                                    )
+                                    raise NotImplementedError("Not supported anymore")
                                 else:
                                     generated_image = run_inference_img_conditioning_with_params(
                                         unet=accelerator.unwrap_model(unet),

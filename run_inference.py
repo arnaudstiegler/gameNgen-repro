@@ -5,22 +5,17 @@ import random
 
 import numpy as np
 import torch
-from diffusers import AutoencoderKL, DDIMScheduler, DDPMScheduler, UNet2DConditionModel
+from diffusers import (AutoencoderKL, DDIMScheduler, DDPMScheduler,
+                       UNet2DConditionModel)
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from PIL.Image import Image
 from torch.amp import autocast
 
-from config_sd import (
-    BUFFER_SIZE,
-    CFG_GUIDANCE_SCALE,
-    HEIGHT,
-    TRAINING_DATASET_DICT,
-    VALIDATION_PROMPT,
-    WIDTH,
-    ZERO_OUT_ACTION_CONDITIONING_PROB,
-)
+from config_sd import (BUFFER_SIZE, CFG_GUIDANCE_SCALE, HEIGHT,
+                       TRAINING_DATASET_DICT, VALIDATION_PROMPT, WIDTH,
+                       ZERO_OUT_ACTION_CONDITIONING_PROB)
 from dataset import get_single_batch
 from sd3.model import get_model, load_model
 
@@ -184,6 +179,15 @@ def next_latent(
             latent_width,
         )
         return reshaped_frames[:, -1]
+    
+
+def decode_and_postprocess(vae: AutoencoderKL, image_processor: VaeImageProcessor, latents: torch.Tensor) -> Image:
+    image = vae.decode(latents / vae.config.scaling_factor, return_dict=False)[0]
+
+    image = image_processor.postprocess(
+        image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
+    )[0]
+    return image
 
 
 def run_inference_img_conditioning_with_params(
@@ -228,14 +232,7 @@ def run_inference_img_conditioning_with_params(
         )
 
         # only take the last frame
-        image = vae.decode(new_frame / vae.config.scaling_factor, return_dict=False)[0]
-
-        # Post-process the image
-        image = image_processor.postprocess(
-            image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
-        )
-        image[0].save(f"./image_val.png")
-
+        image = decode_and_postprocess(vae=vae, image_processor=image_processor, latents=new_frame)
     return image[0]
 
 

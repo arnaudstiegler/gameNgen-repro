@@ -6,11 +6,11 @@ from config_sd import BUFFER_SIZE
 from config_sd import CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
 from diffusers.image_processor import VaeImageProcessor
 from dataset import get_single_batch
-from run_inference import next_latent, encode_conditioning_frames
+from run_inference import next_latent, encode_conditioning_frames, decode_and_postprocess
 import numpy as np
 from PIL import Image
 from loguru import logger
-
+from tqdm import tqdm
 
 # Action 0: TURN_LEFT
 # Action 1: TURN_RIGHT
@@ -54,8 +54,7 @@ def generate_rollout(unet, vae, action_embedding, noise_scheduler, image_process
     current_actions = initial_action_context
     context_latents = initial_frame_context
     
-    for i in range(len(actions)):
-        print(f"Generating frame {i}")
+    for i in tqdm(range(len(actions))):
         # Generate next frame latents
         target_latents = next_latent(
             unet=unet,
@@ -82,12 +81,7 @@ def generate_rollout(unet, vae, action_embedding, noise_scheduler, image_process
     # Decode all latents to images
     all_images = []
     for latent in all_latents[BUFFER_SIZE:]:  # Skip the initial context frames
-        image = vae.decode(latent / vae.config.scaling_factor, return_dict=False)[0]
-
-        image = image_processor.postprocess(
-            image.detach(), output_type="pil", do_denormalize=[True] * image.shape[0]
-        )[0]
-        all_images.append(image)
+        all_images.append(decode_and_postprocess(vae=vae, image_processor=image_processor, latents=latent))
     return all_images
 
 
@@ -102,17 +96,16 @@ def main(model_folder: str) -> None:
     
     scenarios = {
 
-        # 'forward': [8]*15,
-        # 'forward_right_attack': [8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 4, 8, 17],
-        # 'forward_left_attack': [8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 12, 8, 17],
-        'forward_attack_forward_attack': [8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 4, 4, 8, 8, 8, 8, 8, 17, 17, 17, 17, 8],
+        # TODO: add more scenarios
+        # 'only_forward': [8]*30,
+        'forward_attack_forward_attack': [1, 1, 1, 1, 8, 8, 8, 8, 8, 17, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,8,8,8],
     }
 
     batch = get_single_batch(TRAINING_DATASET_DICT["small"])
     for scenario_name, actions in scenarios.items():
         unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
             model_folder, device=device
-    )
+        )
         logger.info(f"Generating rollout forscenario {scenario_name}")
 
         vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
