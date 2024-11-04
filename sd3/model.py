@@ -47,6 +47,7 @@ def get_model(
     action_embedding = torch.nn.Embedding(
         num_embeddings=action_embedding_dim + 1, embedding_dim=768
     )
+    torch.nn.init.normal_(action_embedding.weight, mean=0.0, std=0.02)
 
     # DDIM scheduler allows for v-prediction and less sampling steps
     noise_scheduler = DDIMScheduler.from_pretrained(
@@ -79,20 +80,11 @@ def get_model(
     if not skip_image_conditioning:
         # This is to accomodate concatenating previous frames in the channels dimension
         new_in_channels = 4 * (BUFFER_SIZE + 1)
-        old_conv_in = unet.conv_in
         new_conv_in = torch.nn.Conv2d(
             new_in_channels, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
         )
-
-        # Initialize the new conv layer with the weights from the old one
-        with torch.no_grad():
-            new_conv_in.weight[:, :4, :, :] = old_conv_in.weight
-            # Initialize new channels to random values
-            new_conv_in.weight[:, 4:, :, :] = torch.randn_like(
-                new_conv_in.weight[:, 4:, :, :]
-            )
-
-            new_conv_in.bias = old_conv_in.bias
+        torch.nn.init.xavier_uniform_(new_conv_in.weight)
+        torch.nn.init.zeros_(new_conv_in.bias)
 
         # Replace the conv_in layer
         unet.conv_in = new_conv_in
