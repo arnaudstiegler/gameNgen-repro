@@ -56,6 +56,7 @@ import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
 from sd3.model import save_model, save_and_maybe_upload_to_hub
+from dataset import get_dataloader, get_dataset
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -509,21 +510,8 @@ def main():
                                   exist_ok=True,
                                   token=args.hub_token).repo_id
 
-    dataset = load_dataset(args.dataset_name)
-
-    # Create a train-test split
-    dataset = dataset["train"].train_test_split(test_size=0.2)
-
-    # Create a train-test split
-    train_test_dataset = dataset["train"].train_test_split(test_size=0.1,
-                                                           seed=42)
-
-    # Create a new DatasetDict with train and test splits
-    dataset = DatasetDict({
-        "train": train_test_dataset["train"],
-        "test": train_test_dataset["test"]
-    })
-
+    # This is a bit wasteful
+    dataset = get_dataset(args.dataset_name)
     action_dim = max(max(actions) for actions in dataset['train']['actions'])
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
@@ -553,15 +541,6 @@ def main():
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
-
-    # Compile the model
-    # NB: doesn't speed up training atm
-    # unet = torch.compile(
-    #     unet,
-    #     backend='inductor',
-    #     mode='reduce-overhead',
-    #     fullgraph=True,
-    # )
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
@@ -634,81 +613,10 @@ def main():
             eps=args.adam_epsilon,
         )
 
-    train_transforms = transforms.Compose([
-        # Resizing should actually be useless since that's already the image size
-        transforms.Resize((HEIGHT, WIDTH),
-                          interpolation=transforms.InterpolationMode.BILINEAR),
-        # transforms.CenterCrop(HEIGHT),
-        # transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ])
-
-    def preprocess_train(examples):
-        # TODO: might need some changes here
-        images = []
-        for image_list in examples["images"]:
-            current_images = []
-            image_list = [
-                Image.open(io.BytesIO(base64.b64decode(img))).convert("RGB")
-                for img in image_list
-            ]
-            for image in image_list:
-                current_images.append(train_transforms(image))
-            images.append(current_images)
-
-        if args.skip_action_conditioning:
-            return {"pixel_values": images, "input_ids": [tokenizer.encode(VALIDATION_PROMPT, return_tensors="pt") for _ in images]}
-        else:
-            return {"pixel_values": images, "input_ids": examples["actions"]}
-
-    with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(
-                range(args.max_train_samples))
-
-        train_dataset = dataset["train"].with_transform(preprocess_train)
-
-    def collate_fn(examples):
-        # Function to create a black screen tensor
-        def create_black_screen(height, width):
-            return torch.zeros(3, height, width, dtype=torch.float32)
-
-        if not args.skip_image_conditioning:
-            # Process each example
-            processed_images = []
-            for example in examples:
-                assert len(example["pixel_values"]) >= BUFFER_SIZE + 1, (
-                    f'Image conditioning requires at least {BUFFER_SIZE + 1} frames, got {len(example["pixel_values"])}'
-                )
-
-                # This means you have BUFFER_SIZE conditioning frames + 1 target frame
-                processed_images.append(
-                    torch.stack(example["pixel_values"][:BUFFER_SIZE + 1]))
-
-            # Stack all examples
-            # images has shape: (batch_size, frame_buffer, 3, height, width)
-            images = torch.stack(processed_images)
-            images = images.to(memory_format=torch.contiguous_format).float()
-
-            # UGLY HACK
-            if args.use_cfg:
-                images = no_img_conditioning_augmentation(images, prob=ZERO_OUT_ACTION_CONDITIONING_PROB)
-        else:
-            images = torch.stack(
-                [example["pixel_values"][0] for example in examples])
-            images = images.to(memory_format=torch.contiguous_format).float()
-        return {
-            "pixel_values": images,
-            "input_ids": torch.stack([torch.tensor(example["input_ids"][:BUFFER_SIZE+1]) for example in examples]),
-        }
-
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        shuffle=True,
-        collate_fn=collate_fn,
-        batch_size=args.train_batch_size,
-        num_workers=args.dataloader_num_workers,
+    train_dataloader = get_dataloader(
+        dataset_name=args.dataset_name, 
+        batch_size=args.train_batch_size, 
+        shuffle=True
     )
 
     # Scheduler and math around the number of training steps.
