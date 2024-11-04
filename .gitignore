@@ -162,6 +162,10 @@ cython_debug/
 #.idea/
 
 .DS_Store
+.vscode/
+.ruff_cache/
+
+
 _vizdoom.ini
 trained_agents/
 data/

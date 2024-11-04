@@ -131,7 +131,7 @@ def load_action_embedding(
 
 
 def load_model(
-    model_folder: str,
+    model_folder: str, device: torch.device | None = None
 ) -> tuple[
     UNet2DConditionModel,
     AutoencoderKL,
@@ -176,6 +176,13 @@ def load_model(
     text_encoder = CLIPTextModel.from_pretrained(
         PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
     )
+    
+    if device:
+        unet = unet.to(device)
+        vae = vae.to(device)
+        action_embedding = action_embedding.to(device)
+        text_encoder = text_encoder.to(device)
+    
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
 
 
