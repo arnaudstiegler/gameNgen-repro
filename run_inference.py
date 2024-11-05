@@ -196,6 +196,30 @@ def decode_and_postprocess(
     )[0]
     return image
 
+from peft import get_peft_model, LoraConfig  # Add this import
+
+def get_lora_model(unet, rank=4, lora_alpha=4, target_modules=None):
+    if target_modules is None:
+        target_modules = [
+            "to_q",
+            "to_k",
+            "to_v",
+            "to_out.0",
+            "conv1",
+            "conv2",
+            "conv_shortcut",
+            "conv3",
+            "conv4",
+        ]
+    
+    config = LoraConfig(
+        r=rank,
+        lora_alpha=lora_alpha,
+        target_modules=target_modules,
+        lora_dropout=0.0,
+        bias="none",
+    )
+    return get_peft_model(unet, config)
 
 def run_inference_img_conditioning_with_params(
     unet,
@@ -210,11 +234,22 @@ def run_inference_img_conditioning_with_params(
     do_classifier_free_guidance=True,
     guidance_scale=7.5,
     skip_action_conditioning=False,
+    is_lora=False,  # Changed default to False
 ) -> Image:
+    """
+    Run inference with the model. If is_lora is True, assumes unet is already wrapped with LoRA.
+    """
     assert batch["pixel_values"].shape[0] == 1, "Batch size must be 1"
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
     batch_size = batch["pixel_values"].shape[0]
+    
+    # If using LoRA, we need to use the base model for inference
+    if is_lora:
+        inference_unet = unet.base_model.model
+    else:
+        inference_unet = unet
+        
     with torch.no_grad(), autocast(device_type="cuda", dtype=torch.float32):
         actions = batch["input_ids"]
         latent_height = HEIGHT // vae_scale_factor
@@ -228,7 +263,7 @@ def run_inference_img_conditioning_with_params(
             dtype=torch.float32,
         )
         new_frame = next_latent(
-            unet=unet,
+            unet=inference_unet,  # Use the inference_unet here
             vae=vae,
             noise_scheduler=noise_scheduler,
             action_embedding=action_embedding,
@@ -242,8 +277,7 @@ def run_inference_img_conditioning_with_params(
         image = decode_and_postprocess(
             vae=vae, image_processor=image_processor, latents=new_frame
         )
-    return image[0]
-
+    return image
 
 def main(model_folder: str) -> None:
     device = torch.device(

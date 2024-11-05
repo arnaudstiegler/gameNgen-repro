@@ -124,6 +124,24 @@ def parse_args():
         help="The name of the model to use as a base model.",
     )
     parser.add_argument(
+        "--use_lora",
+        action="store_true",
+        help="Whether to use LoRA for training.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=4,
+        help="The alpha parameter for LoRA scaling",
+    )
+    parser.add_argument(
+        "--target_modules",
+        type=str,
+        nargs="+",
+        default=None,
+        help="List of module names to apply LoRA to",
+    )
+    parser.add_argument(
         "--dataset_name",
         type=str,
         default=TRAINING_DATASET_DICT['small'],
@@ -510,10 +528,17 @@ def main():
                                   exist_ok=True,
                                   token=args.hub_token).repo_id
 
-    # This is a bit wasteful
+    # # This is a bit wasteful
     dataset = load_dataset(args.dataset_name)
     action_dim = max(max(actions) for actions in dataset['train']['actions'])
-
+    # # from sd3.model import load_model
+    # if args.pretrained_model_name_or_path:
+    #     print(f"Loading pretrained model from {args.pretrained_model_name_or_path}")
+    #     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(
+    #         args.pretrained_model_name_or_path, device=accelerator.device
+    #     )
+    #     # unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = load_model(args.pretrained_model_name_or_path)
+    # else:
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)
     
@@ -640,10 +665,70 @@ def main():
         num_warmup_steps=num_warmup_steps_for_scheduler,
         num_training_steps=num_training_steps_for_scheduler,
     )
+    
+    from peft import LoraConfig, get_peft_model
+    def get_lora_model(unet, rank=4, lora_alpha=4, target_modules=None):
+        if target_modules is None:
+            # Default target modules for SD UNet
+            target_modules = [
+                "to_q",
+                "to_k",
+                "to_v",
+                "to_out.0",
+                "conv1",
+                "conv2",
+                "conv_shortcut",
+                "conv3",
+                "conv4",
+            ]
+        
+        config = LoraConfig(
+            r=rank,
+            lora_alpha=lora_alpha,
+            target_modules=target_modules,
+            lora_dropout=0.0,
+            bias="none",
+        )
+        return get_peft_model(unet, config)
+
+    # Only apply LoRA if the flag is set
+    if args.use_lora:
+        logger.info("Using LoRA for training")
+        unet = get_lora_model(
+            unet,
+            rank=args.rank,
+            lora_alpha=args.lora_alpha,
+        )
+        # Only train LoRA parameters
+        params_to_optimize = filter(lambda p: p.requires_grad, unet.parameters())
+    else:
+        logger.info("Training full model (no LoRA)")
+        params_to_optimize = unet.parameters()
+
+    if args.skip_action_conditioning:
+        optimizer = optimizer_cls(
+            unet.parameters(),
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
+    else:
+        optimizer = optimizer_cls(
+            [
+                {"params": params_to_optimize},
+                {"params": action_embedding.parameters()},
+            ],
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
 
     # Prepare everything with our `accelerator`.
     unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         unet, optimizer, train_dataloader, lr_scheduler)
+    
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(
@@ -953,8 +1038,8 @@ def main():
                                         num_inference_steps=50,
                                         do_classifier_free_guidance=args.use_cfg,
                                         guidance_scale=CFG_GUIDANCE_SCALE,
-                                        skip_action_conditioning=args.
-                                        skip_action_conditioning,
+                                        skip_action_conditioning=args.skip_action_conditioning,
+                                        is_lora=args.use_lora,  # Pass the LoRA flag
                                     )
                                 validation_images.append(generated_image)
 
@@ -995,11 +1080,22 @@ def main():
     # Save the model
     accelerator.wait_for_everyone()
 
+    # Modify save function to save LoRA weights
     if accelerator.is_main_process:
+        unet = accelerator.unwrap_model(unet)
+        
+        if args.use_lora:
+            # Save LoRA weights
+            unet.save_pretrained(os.path.join(args.output_dir, "lora"))
+            base_unet = unet.base_model.model
+        else:
+            base_unet = unet
+            
+        # Save the rest of the model components
         save_and_maybe_upload_to_hub(
             repo_id=REPO_NAME,
             output_dir=args.output_dir,
-            unet=unet,
+            unet=base_unet,
             vae=vae,
             noise_scheduler=noise_scheduler,
             action_embedding=action_embedding,
