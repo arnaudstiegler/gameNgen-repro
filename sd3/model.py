@@ -26,76 +26,77 @@ def get_ft_vae_decoder():
     decoder_state_dict = torch.load(file_path, weights_only=True)
     return decoder_state_dict
 
-
 def get_model(
-    action_embedding_dim: int, skip_image_conditioning: bool = False
-) -> tuple[
-    UNet2DConditionModel,
-    AutoencoderKL,
-    torch.nn.Embedding,
-    DDIMScheduler,
-    CLIPTokenizer,
-    CLIPTextModel,
-]:
+    action_embedding_dim: int, 
+    skip_image_conditioning: bool = False,
+    device: torch.device | None = None
+) -> tuple[UNet2DConditionModel, AutoencoderKL, torch.nn.Embedding, DDIMScheduler, CLIPTokenizer, CLIPTextModel]:
     """
     Args:
-        action_embedding_dim: the dimension of the action embedding, i.e the number of possible actions + 1 (do nothing action)
+        action_embedding_dim: the dimension of the action embedding
         skip_image_conditioning: whether to skip image conditioning
+        device: the device to load the models to
     """
-
-    # This will be used to encode the actions
+    # Create action embedding
     action_embedding = torch.nn.Embedding(
-        num_embeddings=action_embedding_dim + 1, embedding_dim=768
+        num_embeddings=action_embedding_dim + 1, 
+        embedding_dim=768
     )
     torch.nn.init.normal_(action_embedding.weight, mean=0.0, std=0.02)
 
-    # DDIM scheduler allows for v-prediction and less sampling steps
+    # Load models with device placement
     noise_scheduler = DDIMScheduler.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="scheduler"
+        PRETRAINED_MODEL_NAME_OR_PATH, 
+        subfolder="scheduler"
     )
-    # This is what the paper uses
     noise_scheduler.register_to_config(prediction_type="v_prediction")
 
-    vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="vae")
+    # Load VAE with custom decoder directly
+    vae = AutoencoderKL.from_pretrained(
+        PRETRAINED_MODEL_NAME_OR_PATH, 
+        subfolder="vae",
+        device_map=device if device else "auto"
+    )
     decoder_state_dict = get_ft_vae_decoder()
     vae.decoder.load_state_dict(decoder_state_dict)
 
     unet = UNet2DConditionModel.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="unet"
+        PRETRAINED_MODEL_NAME_OR_PATH, 
+        subfolder="unet",
+        device_map=device if device else "auto"
     )
-    # There are 10 noise buckets total
     unet.register_to_config(num_class_embeds=NUM_BUCKETS)
-    # We do not use .add_module() because the class_embedding is already initialized as None
     unet.class_embedding = torch.nn.Embedding(
-        NUM_BUCKETS, unet.time_embedding.linear_2.out_features
+        NUM_BUCKETS, 
+        unet.time_embedding.linear_2.out_features
     )
 
+    # Load text models
     tokenizer = CLIPTokenizer.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="tokenizer"
+        PRETRAINED_MODEL_NAME_OR_PATH, 
+        subfolder="tokenizer"
     )
     text_encoder = CLIPTextModel.from_pretrained(
-        PRETRAINED_MODEL_NAME_OR_PATH, subfolder="text_encoder"
+        PRETRAINED_MODEL_NAME_OR_PATH, 
+        subfolder="text_encoder",
+        device_map=device if device else "auto"
     )
 
     if not skip_image_conditioning:
-        # This is to accomodate concatenating previous frames in the channels dimension
+        # Modify UNet input channels
         new_in_channels = 4 * (BUFFER_SIZE + 1)
         new_conv_in = torch.nn.Conv2d(
             new_in_channels, 320, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
         )
         torch.nn.init.xavier_uniform_(new_conv_in.weight)
         torch.nn.init.zeros_(new_conv_in.bias)
-
-        # Replace the conv_in layer
         unet.conv_in = new_conv_in
-        # Have to account for BUFFER SIZE conditioning frames + 1 for the noise
         unet.config["in_channels"] = new_in_channels
 
     unet.requires_grad_(True)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     return unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder
-
 
 def load_embedding_info_dict(model_folder: str) -> dict:
     if os.path.exists(model_folder):
