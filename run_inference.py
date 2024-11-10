@@ -22,7 +22,7 @@ from config_sd import (
     ZERO_OUT_ACTION_CONDITIONING_PROB,
 )
 from dataset import get_single_batch
-from sd3.model import get_model, load_model
+from model import get_model, load_model
 
 torch.manual_seed(9052924)
 np.random.seed(9052924)
@@ -242,7 +242,7 @@ def run_inference_img_conditioning_with_params(
         image = decode_and_postprocess(
             vae=vae, image_processor=image_processor, latents=new_frame
         )
-    return image[0]
+    return image
 
 
 def main(model_folder: str) -> None:
