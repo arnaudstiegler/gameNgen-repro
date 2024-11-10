@@ -38,7 +38,7 @@ from tqdm.auto import tqdm
 from safetensors.torch import save_file
 import wandb
 import diffusers
-from sd3.model import get_model
+from model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils.import_utils import is_xformers_available
@@ -55,7 +55,7 @@ from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
-from sd3.model import save_model, save_and_maybe_upload_to_hub
+from model import save_model, save_and_maybe_upload_to_hub
 from dataset import get_dataloader, get_dataset
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.

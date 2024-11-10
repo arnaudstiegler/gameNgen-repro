@@ -15,7 +15,7 @@ from run_inference import (
     encode_conditioning_frames,
     next_latent,
 )
-from sd3.model import load_model
+from model import load_model
 
 # Action 0: TURN_LEFT
 # Action 1: TURN_RIGHT
