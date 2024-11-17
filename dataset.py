@@ -19,17 +19,16 @@ IMG_TRANSFORMS = transforms.Compose(
 def collate_fn(examples):
     processed_images = []
     for example in examples:
-
-        # This means you have BUFFER_SIZE conditioning frames + 1 target frame
+        # BUFFER_SIZE conditioning frames + 1 target frame
         processed_images.append(
-            torch.stack(example["pixel_values"][:BUFFER_SIZE + 1]))
+            torch.stack(example["pixel_values"]))
 
     # Stack all examples
     # images has shape: (batch_size, frame_buffer, 3, height, width)
     images = torch.stack(processed_images)
     images = images.to(memory_format=torch.contiguous_format).float()
 
-    # UGLY HACK
+    # TODO: UGLY HACK
     images = no_img_conditioning_augmentation(images, prob=ZERO_OUT_ACTION_CONDITIONING_PROB)
     return {
         "pixel_values": images,
@@ -38,36 +37,38 @@ def collate_fn(examples):
 
 
 def preprocess_train(examples):
-    images = []
-    for image_list in examples["images"]:
-        current_images = []
-        image_list = [
-            Image.open(io.BytesIO(base64.b64decode(img))).convert("RGB")
-            for img in image_list
+    images = [
+            IMG_TRANSFORMS(Image.open(io.BytesIO(img)).convert("RGB"))
+            for img in examples["frames"]
         ]
-        for image in image_list:
-            current_images.append(IMG_TRANSFORMS(image))
-        images.append(current_images)
 
     actions = torch.tensor(examples["actions"]) if isinstance(examples["actions"], list) else examples["actions"]
     return {"pixel_values": images, "input_ids": actions}
 
 
-def get_dataset(dataset_name: str):
-    dataset = load_dataset(dataset_name)
-    return dataset["train"].with_transform(preprocess_train)  # type: ignore
+class EpisodeDataset:
+    def __init__(self, dataset_name: str):
+        self.dataset = load_dataset(dataset_name)['train']
+        self.action_dim = max(action for action in self.dataset['actions'])
+        self.dataset = self.dataset.with_transform(preprocess_train)
+        
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx: int):
+        if idx < BUFFER_SIZE:
+            padding = [IMG_TRANSFORMS(Image.new('RGB', (WIDTH, HEIGHT), color='black')) for _ in range(BUFFER_SIZE - idx)]
+            return {'pixel_values': padding + self.dataset[:idx+1]['pixel_values'], 'input_ids': torch.concat([torch.zeros(len(padding)), self.dataset[:idx+1]['input_ids']])}
+        return self.dataset[idx-BUFFER_SIZE:idx+1]
+    
+    def get_action_dim(self) -> int:
+        return self.action_dim
 
 
 def get_dataloader(dataset_name: str, batch_size: int = 1, shuffle: bool = False):
-    dataset = get_dataset(dataset_name)
-    return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)  # type: ignore
+    dataset = EpisodeDataset(dataset_name)
+    return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)
 
 def get_single_batch(dataset_name: str) -> dict[str, torch.Tensor]:
     dataloader = get_dataloader(dataset_name, batch_size=1, shuffle=False)
     return next(iter(dataloader))
-
-if __name__ == "__main__":
-    dataset = get_dataset(TRAINING_DATASET_DICT['small'])
-    print(dataset[0])
-    dataloader = get_dataloader(TRAINING_DATASET_DICT['small'])
-    print(next(iter(dataloader)))

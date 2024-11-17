@@ -56,7 +56,7 @@ import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
 from model import save_model, save_and_maybe_upload_to_hub
-from dataset import get_dataloader, get_dataset
+from dataset import get_dataloader, EpisodeDataset
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
@@ -511,8 +511,8 @@ def main():
                                   token=args.hub_token).repo_id
 
     # This is a bit wasteful
-    dataset = load_dataset(args.dataset_name)
-    action_dim = max(max(actions) for actions in dataset['train']['actions'])
+    dataset = EpisodeDataset(args.dataset_name)
+    action_dim = dataset.get_action_dim()
 
     unet, vae, action_embedding, noise_scheduler, tokenizer, text_encoder = get_model(
         action_dim, skip_image_conditioning=args.skip_image_conditioning)

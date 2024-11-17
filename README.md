@@ -22,7 +22,7 @@ See: `config_sd.py` for the datasets used in the experiments.
 Debug on a single sample
 ```
 python train_text_to_image.py  \
-    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO  \
+    --dataset_name arnaudstiegler/vizdoom-episode  \
     --gradient_checkpointing  \
     --train_batch_size 12  \
     --learning_rate 5e-5  \
@@ -37,7 +37,7 @@ python train_text_to_image.py  \
 Full training
 ```
 python train_text_to_image.py \
-    --dataset_name P-H-B-D-a16z/ViZDoom-Deathmatch-PPO-Lrg \
+    --dataset_name arnaudstiegler/vizdoom-episode \
     --gradient_checkpointing \
     --learning_rate 5e-5 \
     --train_batch_size 12 \

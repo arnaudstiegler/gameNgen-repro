@@ -36,6 +36,11 @@ from model import load_model
 # Action 16: MOVE_FORWARD + MOVE_LEFT + TURN_RIGHT
 # Action 17: ATTACK
 
+'''
+Built action space of size 18 from buttons [<Button.ATTACK: 0> <Button.MOVE_FORWARD: 13> <Button.MOVE_LEFT: 11>
+ <Button.MOVE_RIGHT: 10> <Button.TURN_RIGHT: 14> <Button.TURN_LEFT: 15>]
+'''
+
 """
 0: ?
 1: right
