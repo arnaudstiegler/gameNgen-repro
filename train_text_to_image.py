@@ -616,6 +616,7 @@ def main():
     train_dataloader = get_dataloader(
         dataset_name=args.dataset_name, 
         batch_size=args.train_batch_size, 
+        num_workers=args.dataloader_num_workers,
         shuffle=True
     )
 
@@ -670,7 +671,7 @@ def main():
 
     logger.info("***** Running training *****")
     logger.info(f"  Dataset = {args.dataset_name}")
-    logger.info(f"  Num examples = {len(dataset['train'])}")
+    logger.info(f"  Num examples = {len(dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(
         f"  Instantaneous batch size per device = {args.train_batch_size}")
