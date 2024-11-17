@@ -199,8 +199,6 @@ def create_hf_dataset_from_parquets(parquet_dir: str, repo_id: str) -> None:
     # Load and combine all parquet files
     dataset = Dataset.from_parquet(parquet_files)
     
-    import ipdb; ipdb.set_trace()
-    
     dataset_dict = DatasetDict({
         'train': dataset,
     })
