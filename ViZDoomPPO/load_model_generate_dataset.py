@@ -114,9 +114,6 @@ def make_pkls_dataset(agent, output_dir, eval_env_args, num_episodes=1):
     os.makedirs(output_dir, exist_ok=True)
 
     for episode in tqdm(range(num_episodes), desc="Episodes"):
-        episode_dir = os.path.join(output_dir, f"episode_{episode}")
-        os.makedirs(episode_dir, exist_ok=True)
-
         obs = env.reset()
         done = False
 
@@ -149,39 +146,6 @@ def make_pkls_dataset(agent, output_dir, eval_env_args, num_episodes=1):
         }
         save_episodes_to_parquet(episode_data, output_dir)
     env.close()
-
-# def concatenate_pkls_to_parquet(input_dir, output_parquet):
-#     schema = pa.schema([
-#         ('episode_id', pa.int32()),
-#         ('step_id', pa.int32()),
-#         ('health', pa.list_(pa.int32())),
-#         ('actions', pa.list_(pa.int64())),
-#         ('frames', pa.list_(pa.string()))
-#     ])
-
-#     writer = None
-#     for episode_file in tqdm(os.listdir(input_dir), desc="Processing episodes"):
-#         if episode_file.endswith('.pkl'):
-#             with open(os.path.join(input_dir, episode_file), 'rb') as f:
-#                 data = pickle.load(f)
-                
-#                 processed_data = {
-#                     'episode_id': data['episode_id'],
-#                     'frames': [serialize_image(frame) for frame in data['frames']],
-#                     'actions': data['actions'],
-#                     'health': data['health'],
-#                     'step_id': data['step_id']
-#                 }
-
-#                 df = pd.DataFrame(processed_data)
-#                 table = pa.Table.from_pandas(df)
-                
-#                 filename = f'{output_parquet}/{episode_file.replace('.pkl', '.parquet')}'
-#                 pq.write_table(table, filename)
-
-#     if writer:
-#         writer.close()
-#     logger.info(f"Data saved to {output_parquet}")
 
 
 def upload_to_hf(local_path: str, repo_id: str):
