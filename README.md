@@ -37,7 +37,7 @@ python train_text_to_image.py  \
 Full training
 ```
 python train_text_to_image.py \
-    --dataset_name arnaudstiegler/vizdoom-episode \
+    --dataset_name arnaudstiegler/vizdoom-episode-large \
     --gradient_checkpointing \
     --learning_rate 5e-5 \
     --train_batch_size 12 \
