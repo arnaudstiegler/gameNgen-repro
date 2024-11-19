@@ -15,11 +15,8 @@
 # SCRIPT TO RUN PPO AGENT AND GENERATE DATASET FOR DOOM ENVIRONMENT. 
 
 import imageio
-import multiprocessing
 from common import envs
 import torch
-
-from collections import deque
 from vizdoom.vizdoom import GameVariable
 
 
@@ -27,13 +24,10 @@ from tqdm import tqdm
 import argparse
 from huggingface_hub import HfApi
 import pandas as pd
-MODEL_PATH = "logs/models/agent_test/final_model.zip"
-import base64
+
 import io
-from PIL import Image as PILImage
 
 import os
-import zipfile
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -41,7 +35,6 @@ import numpy as np
 from datasets import Dataset, DatasetDict
 import glob
 import pyarrow.parquet as pq
-import pickle
 from train_ppo_parallel import DoomWithBotsCurriculum, game_instance
 from stable_baselines3.common.vec_env import (
     VecTransposeImage,
@@ -49,6 +42,12 @@ from stable_baselines3.common.vec_env import (
 )
 from PIL import Image
 from loguru import logger
+
+# To replicate frame_skip in the environment
+ACTION_REPEAT = 4
+# Have to set frame_skip to 1 so that the environment doesn't actually skip frames
+FRAME_SKIP = 1
+MODEL_PATH = "logs/models/agent_test/final_model.zip"
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,19 +65,37 @@ def dummy_vec_env_with_bots_curriculum(n_envs=1, **kwargs) -> VecTransposeImage:
 
 
 def make_gif(agent, file_path, eval_env_args, num_episodes=1):
+    """Generate a GIF by running the agent in the environment.
+
+    Args:
+        agent: The trained PPO agent.
+        file_path (str): Path to save the generated GIF.
+        eval_env_args (dict): Arguments for the evaluation environment.
+        num_episodes (int): Number of episodes to run.
+    
+    Returns:
+        list: Collected health values for analysis.
+    """
+    # Set frame_skip to 1 to capture all frames
+    eval_env_args['frame_skip'] = 1
     env = dummy_vec_env_with_bots_curriculum(1, **eval_env_args)
 
     images = []
     actions = []
-    health_values = []  # New list to store health values
-    for i in range(num_episodes):
-        logger.info(f"Episode {i+1} of {num_episodes}")
+    health_values = []
+    current_action = None
+    frame_counter = 0
+
+    for episode in range(num_episodes):
+        logger.info(f"Episode {episode + 1} of {num_episodes}")
         obs = env.reset()
 
         done = False
         while not done:
-            action, _ = agent.predict(obs)
-            obs, _, done, _ = env.step(action)
+            if frame_counter % ACTION_REPEAT == 0:
+                current_action, _ = agent.predict(obs)
+            
+            obs, _, done, _ = env.step(current_action)
 
             # Get the raw screen buffer from the Doom game instance
             screen = env.venv.envs[0].game.get_state().screen_buffer
@@ -87,31 +104,40 @@ def make_gif(agent, file_path, eval_env_args, num_episodes=1):
             health = env.venv.envs[0].game.get_game_variable(GameVariable.HEALTH)
             health_values.append(health)  # Store the health value
 
-            actions.append(action)
+            actions.append(current_action)
             images.append(screen)
-            
+
+            frame_counter += 1
 
     print("Health values:", health_values)
     print("Number of health values:", len(health_values))
     print("Number of actions:", len(actions))
     print("Number of images:", len(images))
 
-    imageio.mimsave(file_path, images, fps=10)
+    # Save only the first 1000 frames to avoid large file size
+    imageio.mimsave(file_path, images[:1000], fps=20)
     env.close()
     logger.info(f"GIF saved to {file_path}")
-    return health_values  # Return the health values for further analysis if needed
-
-
-# def serialize_image(image_array: np.ndarray) -> str:
-#     img = PILImage.fromarray(image_array)
-#     buffered = io.BytesIO()
-#     img.save(buffered, format="PNG")
-#     return base64.b64encode(buffered.getvalue()).decode('utf-8')
+    
+    return health_values
 
 
 def make_pkls_dataset(agent, output_dir, eval_env_args, num_episodes=1):
+    """Generate a dataset by running the agent in the environment and saving the data as Parquet files.
+
+    Args:
+        agent: The trained PPO agent.
+        output_dir (str): Directory to save the Parquet files.
+        eval_env_args (dict): Arguments for the evaluation environment.
+        num_episodes (int): Number of episodes to run.
+    """
+    # Set frame_skip to 1 to capture all frames
+    eval_env_args['frame_skip'] = 1
     env = dummy_vec_env_with_bots_curriculum(1, **eval_env_args)
     os.makedirs(output_dir, exist_ok=True)
+
+    current_action = None
+    frame_counter = 0
 
     for episode in tqdm(range(num_episodes), desc="Episodes"):
         obs = env.reset()
@@ -122,29 +148,33 @@ def make_pkls_dataset(agent, output_dir, eval_env_args, num_episodes=1):
         actions = []
         health_values = []
         step_ids = []
-        
-        while not np.all(done):
-            action, _ = agent.predict(obs)
-            obs, _, done, _ = env.step(action)
+
+        while not done:
+            if frame_counter % ACTION_REPEAT == 0:
+                current_action, _ = agent.predict(obs)
+
+            obs, _, done, _ = env.step(current_action)
 
             screen = env.venv.envs[0].game.get_state().screen_buffer
             health = env.venv.envs[0].game.get_game_variable(GameVariable.HEALTH)
-            
+
             frames.append(screen)
-            actions.append(int(action.item()))
-            health_values.append(health)
+            actions.append(int(current_action.item()))
+            health_values.append(int(health))
             step_ids.append(step_id)
-            
+
             step_id += 1
+            frame_counter += 1
 
         episode_data = {
-            'frames': frames,
+            'frames': [compress_image(frame) for frame in frames],
             'actions': actions,
             'health': health_values,
             'step_id': step_ids,
             'episode_id': [episode] * len(step_ids)
         }
         save_episodes_to_parquet(episode_data, output_dir)
+
     env.close()
 
 
@@ -226,7 +256,7 @@ def main():
 
     env_args = {
         "scenario": scenario,
-        "frame_skip": 4,
+        "frame_skip": 1,
         "frame_processor": envs.default_frame_processor,
         "n_bots": 8,
         "shaping": True,
