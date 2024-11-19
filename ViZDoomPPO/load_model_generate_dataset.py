@@ -207,7 +207,7 @@ def save_episodes_to_parquet(episode_data: dict, output_parquet: str):
     """Save batch with compressed binary images instead of base64"""
     processed_data = {
         'episode_id': episode_data['episode_id'],
-        'frames': [compress_image(frame) for frame in episode_data['frames']],
+        'frames': [frame for frame in episode_data['frames']],
         'actions': [int(a) for a in episode_data['actions']],
         'health': [int(h) for h in episode_data['health']],
         'step_ids': [int(s) for s in episode_data['step_id']]
