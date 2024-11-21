@@ -57,6 +57,10 @@ from model import get_model, save_and_maybe_upload_to_hub
 from run_inference import run_inference_img_conditioning_with_params
 from utils import add_conditioning_noise, get_conditioning_noise
 
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.31.0.dev0")
 
@@ -636,11 +640,25 @@ def main():
             eps=args.adam_epsilon,
         )
 
+    # Initialize distributed training
+    if args.local_rank != -1:
+        torch.cuda.set_device(args.local_rank)
+        dist.init_process_group(backend='nccl')
+    
+    # Modify dataloader to use DistributedSampler
+    train_sampler = DistributedSampler(
+        dataset,
+        num_replicas=accelerator.num_processes,
+        rank=accelerator.process_index,
+        shuffle=True
+    )
+    
     train_dataloader = get_dataloader(
         dataset_name=args.dataset_name,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
-        shuffle=True,
+        sampler=train_sampler,  # Add sampler parameter
+        shuffle=False,  # Important: must be False when using DistributedSampler
     )
 
     # Scheduler and math around the number of training steps.
@@ -772,6 +790,8 @@ def main():
     )
 
     for epoch in range(first_epoch, args.num_train_epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)  # Important for proper shuffling
         unet.train()
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):

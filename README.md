@@ -66,6 +66,25 @@ python train_text_to_image.py \
     --report_to wandb
 ```
 
+## Run distributed trainng
+
+```
+torchrun --nproc_per_node=1 train_text_to_image.py \
+    --dataset_name arnaudstiegler/vizdoom-episode \
+    --gradient_checkpointing \
+    --learning_rate 5e-5 \
+    --train_batch_size 12 \
+    --dataloader_num_workers 18 \
+    --num_train_epochs 10 \
+    --validation_steps 1000 \
+    --use_cfg \
+    --output_dir sd-model-finetuned \
+    --lr_scheduler cosine \
+    --push_to_hub \
+    --report_to wandb
+```
+
+
 ## Run inference (generating a single image)
 
 ```
