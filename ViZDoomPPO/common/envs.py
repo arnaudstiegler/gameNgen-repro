@@ -222,13 +222,13 @@ def solve_env(env: vec_env.VecTransposeImage, eval_env: vec_env.VecTransposeImag
     eval_callback = EvalCallback(
         eval_env,
         n_eval_episodes=5,
-        eval_freq=16384/6,
+        eval_freq=4000,
         log_path=f'logs/evaluations/{scenario}',
         best_model_save_path=f'logs/models/{scenario}'
     )
 
     # Set up progress bar
-    total_timesteps = 1000000
+    total_timesteps = 5_000_000
     pbar = tqdm(total=total_timesteps, desc="Training Progress")
     class ProgressBarCallback(BaseCallback):
         def __init__(self, pbar):
@@ -257,7 +257,7 @@ def solve_env(env: vec_env.VecTransposeImage, eval_env: vec_env.VecTransposeImag
     # Start the training process.
     try:
         agent.learn(
-            total_timesteps=1500000, 
+            total_timesteps=5_000_000, 
             tb_log_name=scenario, 
             callback=[eval_callback, progress_callback],
             reset_num_timesteps=not resume  # Don't reset timesteps if resuming

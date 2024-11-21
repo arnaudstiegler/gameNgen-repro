@@ -24,6 +24,7 @@ import string
 from vizdoom.vizdoom import GameVariable
 from collections import deque
 import torch
+import multiprocessing
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # device=torch.device("mps")
@@ -385,10 +386,9 @@ if __name__ == "__main__":
 
     # Agent parameters.
     agent_args = {
-        "n_epochs": 3,
         "n_steps": 4096,
         "learning_rate": 1e-4,
-        "batch_size": 32,
+        "batch_size": 64,
         "policy_kwargs": {"features_extractor_class": CustomCNN},
         "device": device,
     }
@@ -396,9 +396,9 @@ if __name__ == "__main__":
     # Environment parameters.
     env_args = {
         "scenario": scenario,
-        "frame_skip": 2,
+        "frame_skip": 4,
         "frame_processor": envs.default_frame_processor,
-        "n_bots": 8,
+        "n_bots": 6,
         "shaping": True,
     }
 
@@ -406,11 +406,12 @@ if __name__ == "__main__":
     eval_env_args = dict(env_args)
     eval_env_args["shaping"] = False
 
+    n_envs = multiprocessing.cpu_count() - 1
     # Create environments with bots and shaping.
     env = vec_env_with_bots_curriculum(
-        12, **env_args
+        n_envs, **env_args
     )  # You can increase the number of parallel environments
-    eval_env = vec_env_with_bots_curriculum(1, **eval_env_args)
+    eval_env = vec_env_with_bots_curriculum(n_envs, **eval_env_args)
 
     agent = envs.solve_env(
         env,
@@ -419,6 +420,6 @@ if __name__ == "__main__":
         agent_args,
         resume=False,
     )
-    envs.save_model(agent, "dm_longrun_test_frameskip2")
+    envs.save_model(agent, "agent_test")
 
 

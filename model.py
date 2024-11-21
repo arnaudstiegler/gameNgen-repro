@@ -225,19 +225,22 @@ def save_and_maybe_upload_to_hub(
     save_model(output_dir, unet, vae, noise_scheduler, action_embedding)
 
     if should_upload_to_hub:
-        upload_folder(
-            repo_id=repo_id,
+        try:
+            upload_folder(
+                repo_id=repo_id,
             folder_path=output_dir,
             commit_message="End of training",
             ignore_patterns=["step_*", "epoch_*"],
-        )
-        save_model_card(
-            repo_id=repo_id,
-            images=images,
-            base_model=PRETRAINED_MODEL_NAME_OR_PATH,
-            dataset_name=dataset_name,
-            repo_folder=output_dir,
-        )
+            )
+            save_model_card(
+                repo_id=repo_id,
+                images=images,
+                base_model=PRETRAINED_MODEL_NAME_OR_PATH,
+                dataset_name=dataset_name,
+                repo_folder=output_dir,
+            )
+        except Exception as e:
+            print(f"Error uploading to hub: {e}")
 
 
 def save_model_card(
