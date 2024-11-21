@@ -17,7 +17,22 @@
 See: `config_sd.py` for the datasets used in the experiments.
 
 
-## Run training on gameNgen
+## Generate the training data
+
+First, cd into ViZDoomPPO/ and generate the venv from the `requirements.txt` file.
+
+Then, run the following command to train an agent on vizdoom:
+```
+python train_ppo_parallel.py
+```
+
+Once the agent is trained, generate episodes and upload them as a HF dataset using:
+```
+python load_model_generate_dataset.py --episodes {number of episodes} --output parquet --upload --hf_repo {name of the repo}
+```
+
+
+## Train the diffusion model
 
 Debug on a single sample
 ```
