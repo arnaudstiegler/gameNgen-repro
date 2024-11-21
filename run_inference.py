@@ -1,11 +1,9 @@
 import argparse
-import base64
-import io
 import random
 
 import numpy as np
 import torch
-from diffusers import AutoencoderKL, DDIMScheduler, DDPMScheduler, UNet2DConditionModel
+from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
@@ -17,9 +15,8 @@ from config_sd import (
     CFG_GUIDANCE_SCALE,
     HEIGHT,
     TRAINING_DATASET_DICT,
-    VALIDATION_PROMPT,
     WIDTH,
-    ZERO_OUT_ACTION_CONDITIONING_PROB,
+    DEFAULT_NUM_INFERENCE_STEPS,
 )
 from dataset import get_single_batch
 from model import get_model, load_model
@@ -81,7 +78,7 @@ def next_latent(
     context_latents: torch.Tensor,
     actions: torch.Tensor,
     device: torch.device,
-    num_inference_steps: int = 30,
+    num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
     do_classifier_free_guidance: bool = True,
     guidance_scale: float = CFG_GUIDANCE_SCALE,
     skip_action_conditioning: bool = False,
@@ -206,9 +203,9 @@ def run_inference_img_conditioning_with_params(
     text_encoder,
     batch,
     device,
-    num_inference_steps=30,
+    num_inference_steps=DEFAULT_NUM_INFERENCE_STEPS,
     do_classifier_free_guidance=True,
-    guidance_scale=7.5,
+    guidance_scale=CFG_GUIDANCE_SCALE,
     skip_action_conditioning=False,
 ) -> Image:
     assert batch["pixel_values"].shape[0] == 1, "Batch size must be 1"
@@ -236,6 +233,9 @@ def run_inference_img_conditioning_with_params(
             device=device,
             actions=actions,
             skip_action_conditioning=skip_action_conditioning,
+            num_inference_steps=num_inference_steps,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            guidance_scale=guidance_scale,
         )
 
         # only take the last frame
@@ -272,7 +272,7 @@ def main(model_folder: str) -> None:
         skip_action_conditioning=False,
         do_classifier_free_guidance=False,
         guidance_scale=CFG_GUIDANCE_SCALE,
-        num_inference_steps=50,
+        num_inference_steps=DEFAULT_NUM_INFERENCE_STEPS,
     )
     img.save("validation_image.png")
 

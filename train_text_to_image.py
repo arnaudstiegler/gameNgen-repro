@@ -31,31 +31,24 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder
+from huggingface_hub import create_repo
 from packaging import version
-from torchvision import transforms
 from tqdm.auto import tqdm
-from safetensors.torch import save_file
+
 import wandb
 import diffusers
 from model import get_model
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils.import_utils import is_xformers_available
-from PIL import Image
-import base64
-import io
-
-from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, HEIGHT, WIDTH, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
+from config_sd import REPO_NAME, BUFFER_SIZE, VALIDATION_PROMPT, DEFAULT_NUM_INFERENCE_STEPS, ZERO_OUT_ACTION_CONDITIONING_PROB, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
 import wandb
 from run_inference import run_inference_img_conditioning_with_params
-from data_augmentation import no_img_conditioning_augmentation
-from datasets import load_dataset, DatasetDict
 from safetensors.torch import load_file
 import json
 from diffusers import DDIMScheduler
 from utils import get_conditioning_noise, add_conditioning_noise
-from model import save_model, save_and_maybe_upload_to_hub
+from model import save_and_maybe_upload_to_hub
 from dataset import get_dataloader, EpisodeDataset
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -951,7 +944,7 @@ def main():
                                         text_encoder=text_encoder,
                                         batch=single_sample_batch,
                                         device=accelerator.device,
-                                        num_inference_steps=50,
+                                        num_inference_steps=DEFAULT_NUM_INFERENCE_STEPS,
                                         do_classifier_free_guidance=args.use_cfg,
                                         guidance_scale=CFG_GUIDANCE_SCALE,
                                         skip_action_conditioning=args.

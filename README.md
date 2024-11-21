@@ -47,6 +47,7 @@ python train_text_to_image.py \
     --use_cfg \
     --output_dir sd-model-finetuned \
     --push_to_hub \
+    --lr_scheduler cosine \
     --report_to wandb
 ```
 

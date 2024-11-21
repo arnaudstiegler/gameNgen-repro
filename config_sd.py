@@ -10,6 +10,9 @@ WIDTH = 320
 # CFG ratio
 CFG_GUIDANCE_SCALE = 1.5
 
+# Default number of inference steps for diffusion
+DEFAULT_NUM_INFERENCE_STEPS = 10
+
 # Conditional Image noise parameters
 # Those values are the same as in the paper
 MAX_NOISE_LEVEL = 0.7
