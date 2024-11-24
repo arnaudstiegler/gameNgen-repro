@@ -418,7 +418,8 @@ if __name__ == "__main__":
         eval_env,
         scenario,
         agent_args,
-        resume=False,
+        resume=True,
+        load_path="logs/models/deathmatch_simple/best_model.zip",
     )
     envs.save_model(agent, "agent_test")
 
