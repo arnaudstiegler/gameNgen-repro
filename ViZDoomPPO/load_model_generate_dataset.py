@@ -45,9 +45,7 @@ from loguru import logger
 
 # To replicate frame_skip in the environment
 ACTION_REPEAT = 4
-# Have to set frame_skip to 1 so that the environment doesn't actually skip frames
-FRAME_SKIP = 1
-MODEL_PATH = "logs/models/agent_test/final_model.zip"
+MODEL_PATH = "logs/models/deathmatch_simple/best_model.zip"
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -260,24 +258,24 @@ def main():
         "frame_processor": envs.default_frame_processor,
         "n_bots": 8,
         "shaping": True,
-        "initial_level": 1,
+        "initial_level": 5,
         "max_level": 5,
         "rolling_mean_length": 10,
     }
 
-    eval_env_args = dict(env_args)
-    new_env = dummy_vec_env_with_bots_curriculum(1, **env_args)
-    agent2 = envs.load_model(
-        MODEL_PATH,
-        new_env,
-    )
+    # eval_env_args = dict(env_args)
+    # new_env = dummy_vec_env_with_bots_curriculum(1, **env_args)
+    # agent2 = envs.load_model(
+    #     MODEL_PATH,
+    #     new_env,
+    # )
 
     if args.output == "gif":
         output_file = "./output.gif"
-        make_gif(agent2, output_file, eval_env_args, num_episodes=args.episodes)
+    #     make_gif(agent2, output_file, eval_env_args, num_episodes=args.episodes)
     else:
         output_dir = "./dataset"
-        make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes, eval_env_args=eval_env_args)
+    #     make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes, eval_env_args=eval_env_args)
 
     if args.upload:
         if not args.hf_repo:
