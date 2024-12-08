@@ -42,6 +42,12 @@ def eval_model(model: AutoencoderKL, test_loader: DataLoader) -> float:
             reconstruction = model(data).sample
             loss = F.mse_loss(reconstruction, data, reduction="mean")
             test_loss += loss.item()
+        
+            recon = model.decode(model.encode(data).latent_dist.sample()).sample
+            wandb.log({
+                "original": [wandb.Image(img) for img in data],
+                "reconstructed": [wandb.Image(img) for img in recon]
+            })
         return test_loss / len(test_loader)
 
 
@@ -63,7 +69,7 @@ wandb.init(
 )
 
 # Dataset Setup
-dataset = load_dataset("arnaudstiegler/vizdoom-50-episodes-skipframe-4")
+dataset = load_dataset("arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5")
 split_dataset = dataset["train"].train_test_split(test_size=500, seed=42)
 train_dataset = split_dataset["train"].with_transform(preprocess_train)
 test_dataset = split_dataset["test"].with_transform(preprocess_train)
@@ -89,11 +95,11 @@ scheduler = get_cosine_schedule_with_warmup(
 
 step = 0
 for epoch in range(NUM_EPOCHS):
-    model.train()
     train_loss = 0
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS}")
 
     for batch in progress_bar:
+        model.train()
         data = batch["pixel_values"].to(device)
         optimizer.zero_grad()
 
