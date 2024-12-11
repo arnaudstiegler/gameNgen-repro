@@ -379,8 +379,6 @@ def vec_env_with_bots_curriculum(n_envs=1, **kwargs) -> VecTransposeImage:
     )
 
 
-#TODO: better reward logging / model observability. 
-
 if __name__ == "__main__":
     scenario = "deathmatch_simple"
 
@@ -420,9 +418,6 @@ if __name__ == "__main__":
         eval_env,
         scenario,
         agent_args,
-        resume=True,
-        load_path="logs/models/deathmatch_simple/best_model.zip",
+        resume=False,
     )
     envs.save_model(agent, "agent_test")
-
-

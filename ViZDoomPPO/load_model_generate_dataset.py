@@ -263,19 +263,19 @@ def main():
         "rolling_mean_length": 10,
     }
 
-    # eval_env_args = dict(env_args)
-    # new_env = dummy_vec_env_with_bots_curriculum(1, **env_args)
-    # agent2 = envs.load_model(
-    #     MODEL_PATH,
-    #     new_env,
-    # )
+    eval_env_args = dict(env_args)
+    new_env = dummy_vec_env_with_bots_curriculum(1, **env_args)
+    agent2 = envs.load_model(
+        MODEL_PATH,
+        new_env,
+    )
 
     if args.output == "gif":
         output_file = "./output.gif"
-    #     make_gif(agent2, output_file, eval_env_args, num_episodes=args.episodes)
+        make_gif(agent2, output_file, eval_env_args, num_episodes=args.episodes)
     else:
         output_dir = "./dataset"
-    #     make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes, eval_env_args=eval_env_args)
+        make_pkls_dataset(agent2, output_dir, num_episodes=args.episodes, eval_env_args=eval_env_args)
 
     if args.upload:
         if not args.hf_repo:
