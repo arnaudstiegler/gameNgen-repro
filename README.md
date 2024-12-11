@@ -31,6 +31,11 @@ Once the agent is trained, generate episodes and upload them as a HF dataset usi
 python load_model_generate_dataset.py --episodes {number of episodes} --output parquet --upload --hf_repo {name of the repo}
 ```
 
+Note: you can also generate a gif file to QA the behavior of the agent by running:
+```
+python load_model_generate_dataset.py --episodes 1 --output gif
+```
+
 
 ## Train the diffusion model
 

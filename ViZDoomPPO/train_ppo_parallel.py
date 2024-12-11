@@ -375,11 +375,9 @@ def env_with_bots_curriculum(scenario, **kwargs) -> envs.DoomEnv:
 def vec_env_with_bots_curriculum(n_envs=1, **kwargs) -> VecTransposeImage:
     """Wraps a Doom game instance in a vectorized environment with shaped rewards and curriculum."""
     return VecTransposeImage(
-        SubprocVecEnv([lambda: env_with_bots_shaped(**kwargs) for _ in range(n_envs)])
+        SubprocVecEnv([lambda: env_with_bots_curriculum(**kwargs) for _ in range(n_envs)])
     )
 
-
-#TODO: better reward logging / model observability. 
 
 if __name__ == "__main__":
     scenario = "deathmatch_simple"
@@ -400,6 +398,8 @@ if __name__ == "__main__":
         "frame_processor": envs.default_frame_processor,
         "n_bots": 6,
         "shaping": True,
+        "initial_level": 1,
+        "max_level": 5,
     }
 
     # In the evaluation environment we measure frags only.
@@ -421,5 +421,3 @@ if __name__ == "__main__":
         resume=False,
     )
     envs.save_model(agent, "agent_test")
-
-
