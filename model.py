@@ -15,17 +15,12 @@ import json
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 
 
-def get_ft_vae_decoder():
+def get_ft_vae_decoder() -> AutoencoderKL:
     """
     Based on the original GameNGen code, the vae decoder is finetuned on images from the
     training set to improve the quality of the images.
-    """
-    file_path = hf_hub_download(
-        repo_id="P-H-B-D-a16z/GameNGenSDVaeDecoder", filename="trained_vae_decoder.pth"
-    )
-    decoder_state_dict = torch.load(file_path, weights_only=True)
-    return decoder_state_dict
-
+    """ 
+    return AutoencoderKL.from_pretrained("arnaudstiegler/game-n-gen-vae-finetuned")
 
 def get_model(
     action_embedding_dim: int, skip_image_conditioning: bool = False
@@ -56,9 +51,7 @@ def get_model(
     # This is what the paper uses
     noise_scheduler.register_to_config(prediction_type="v_prediction")
 
-    vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_NAME_OR_PATH, subfolder="vae")
-    decoder_state_dict = get_ft_vae_decoder()
-    vae.decoder.load_state_dict(decoder_state_dict)
+    vae = get_ft_vae_decoder()
 
     unet = UNet2DConditionModel.from_pretrained(
         PRETRAINED_MODEL_NAME_OR_PATH, subfolder="unet"
@@ -156,10 +149,7 @@ def load_model(
         model_folder, subfolder="noise_scheduler"
     )
 
-    vae = AutoencoderKL.from_pretrained(model_folder, subfolder="vae")
-    decoder_state_dict = get_ft_vae_decoder()
-    vae.decoder.load_state_dict(decoder_state_dict)
-
+    vae = get_ft_vae_decoder()
     unet = UNet2DConditionModel.from_pretrained(model_folder, subfolder="unet")
 
     assert (
