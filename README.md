@@ -52,12 +52,12 @@ python train_text_to_image.py  \
 Full training
 ```
 python train_text_to_image.py \
-    --dataset_name arnaudstiegler/vizdoom-episode-large \
+    --dataset_name arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5 \
     --gradient_checkpointing \
     --learning_rate 5e-5 \
     --train_batch_size 12 \
     --dataloader_num_workers 18 \
-    --num_train_epochs 10 \
+    --num_train_epochs 3 \
     --validation_steps 1000 \
     --use_cfg \
     --output_dir sd-model-finetuned \
