@@ -9,7 +9,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE, TRAINING_DATASET_DICT
-from dataset import get_single_batch
+from dataset import EpisodeDataset, collate_fn
 from run_inference import (
     decode_and_postprocess,
     encode_conditioning_frames,
@@ -56,6 +56,8 @@ Built action space of size 18 from buttons [<Button.ATTACK: 0> <Button.MOVE_FORW
 torch.manual_seed(9052924)
 np.random.seed(9052924)
 random.seed(9052924)
+
+EPISODE_LENGTH = 30
 
 
 def generate_rollout(
@@ -104,7 +106,7 @@ def generate_rollout(
 
     # Decode all latents to images
     all_images = []
-    for latent in all_latents[BUFFER_SIZE:]:  # Skip the initial context frames
+    for latent in all_latents:  # Skip the initial context frames
         all_images.append(
             decode_and_postprocess(
                 vae=vae, image_processor=image_processor, latents=latent
@@ -113,7 +115,7 @@ def generate_rollout(
     return all_images
 
 
-def main(model_folder: str) -> None:
+def main(model_folder: str, use_scenario: bool) -> None:
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -124,40 +126,32 @@ def main(model_folder: str) -> None:
 
     scenarios = {
         # TODO: add more scenarios
+        # TODO: remember there's a skip frame of 4
         # 'only_forward': [8]*30,
-        "forward_attack_forward_attack": [
-            1,
-            1,
-            1,
-            1,
-            8,
-            8,
-            8,
-            8,
-            8,
-            17,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-            8,
-        ],
+        "forward_attack_forward_attack": [1]*4 + [8]*4 + [1]*4 + [8]*4,
+        "move_left_attack_move_left_attack": [5]*4 + [17]*4 + [5]*4 + [17]*4,
     }
 
-    batch = get_single_batch(TRAINING_DATASET_DICT["small"])
-    for scenario_name, actions in scenarios.items():
+    if use_scenario:
+        raise NotImplementedError("Scenario generation not implemented")
+        scenario_name = "forward_attack_forward_attack"
+        actions = scenarios[scenario_name]
+    else:
+        dataset = EpisodeDataset(TRAINING_DATASET_DICT["bestest"])
+        # This is random
+
+    
+    start_indices = [random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(20)]
+    
+    for start_idx in start_indices:
+        # Collate to ge the right tensor dims
+        batch = collate_fn([dataset[start_idx]])
+        actions = [dataset[i]['input_ids'][-1].item() for i in range(start_idx+BUFFER_SIZE, start_idx + BUFFER_SIZE + EPISODE_LENGTH)]
+        
         unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
             model_folder, device=device
         )
-        logger.info(f"Generating rollout forscenario {scenario_name}")
+        logger.info(f"Generating rollout for scenario")
 
         vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
         image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
@@ -186,7 +180,7 @@ def main(model_folder: str) -> None:
         )
 
         all_images[0].save(
-            f"rollout_{scenario_name}.gif",
+            f"rollouts/rollout_{start_idx}.gif",
             save_all=True,
             append_images=all_images[1:],
             duration=100,  # 100ms per frame
@@ -204,6 +198,12 @@ if __name__ == "__main__":
         type=str,
         help="Path to the folder containing the model weights",
     )
+    parser.add_argument(
+        "--use_scenario",
+        type=bool,
+        help="Use scenario",
+        default=False,
+    )
     args = parser.parse_args()
 
-    main(model_folder=args.model_folder)
+    main(model_folder=args.model_folder, use_scenario=args.use_scenario)

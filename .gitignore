@@ -173,3 +173,4 @@ test_dataset/data/
 wandb/
 sd-model-finetuned/
 inference_test/
+rollouts/
