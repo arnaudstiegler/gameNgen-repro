@@ -7,7 +7,6 @@ from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
-from PIL.Image import Image
 from torch.amp import autocast
 
 from config_sd import (
@@ -19,7 +18,7 @@ from config_sd import (
     DEFAULT_NUM_INFERENCE_STEPS,
 )
 from dataset import get_single_batch
-from model import get_model, load_model
+from model import load_model
 
 torch.manual_seed(9052924)
 np.random.seed(9052924)
@@ -211,12 +210,8 @@ def run_inference_img_conditioning_with_params(
     assert batch["pixel_values"].shape[0] == 1, "Batch size must be 1"
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-    batch_size = batch["pixel_values"].shape[0]
     with torch.no_grad(), autocast(device_type="cuda", dtype=torch.float32):
         actions = batch["input_ids"]
-        latent_height = HEIGHT // vae_scale_factor
-        latent_width = WIDTH // vae_scale_factor
-        num_channels_latents = vae.config.latent_channels
 
         conditioning_frames_latents = encode_conditioning_frames(
             vae,

@@ -1,9 +1,8 @@
 import torch
 from PIL import Image
 import io
-import base64
 from torchvision import transforms
-from config_sd import HEIGHT, WIDTH, TRAINING_DATASET_DICT, BUFFER_SIZE, ZERO_OUT_ACTION_CONDITIONING_PROB
+from config_sd import HEIGHT, WIDTH, BUFFER_SIZE, ZERO_OUT_ACTION_CONDITIONING_PROB
 from datasets import load_dataset
 from data_augmentation import no_img_conditioning_augmentation
 
@@ -51,16 +50,16 @@ class EpisodeDataset:
         self.dataset = load_dataset(dataset_name)['train']
         self.action_dim = max(action for action in self.dataset['actions'])
         self.dataset = self.dataset.with_transform(preprocess_train)
-        
+
     def __len__(self) -> int:
         return len(self.dataset)
-    
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         if idx < BUFFER_SIZE:
             padding = [IMG_TRANSFORMS(Image.new('RGB', (WIDTH, HEIGHT), color='black')) for _ in range(BUFFER_SIZE - idx)]
             return {'pixel_values': padding + self.dataset[:idx+1]['pixel_values'], 'input_ids': torch.concat([torch.zeros(len(padding), dtype=torch.long), self.dataset[:idx+1]['input_ids']])}
         return self.dataset[idx-BUFFER_SIZE:idx+1]
-    
+
     def get_action_dim(self) -> int:
         return self.action_dim
 

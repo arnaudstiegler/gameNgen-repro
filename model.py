@@ -6,7 +6,7 @@ from transformers import CLIPTokenizer, CLIPTextModel
 from huggingface_hub import hf_hub_download
 from config_sd import BUFFER_SIZE
 from utils import NUM_BUCKETS
-from huggingface_hub import upload_folder, hf_hub_download
+from huggingface_hub import upload_folder
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from safetensors.torch import save_file, load_file
 import json
