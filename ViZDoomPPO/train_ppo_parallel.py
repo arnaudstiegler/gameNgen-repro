@@ -379,8 +379,6 @@ def vec_env_with_bots_curriculum(n_envs=1, **kwargs) -> VecTransposeImage:
     )
 
 
-#TODO: better reward logging / model observability. 
-
 if __name__ == "__main__":
     scenario = "deathmatch_simple"
 

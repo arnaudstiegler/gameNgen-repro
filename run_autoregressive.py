@@ -4,7 +4,6 @@ import random
 import numpy as np
 import torch
 from diffusers.image_processor import VaeImageProcessor
-from loguru import logger
 from PIL import Image
 from tqdm import tqdm
 
@@ -100,18 +99,24 @@ def main(model_folder: str) -> None:
         else "cpu"
     )
 
-    dataset = EpisodeDataset(TRAINING_DATASET_DICT["small"])    
-    start_indices = [random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(20)]
-    
+    dataset = EpisodeDataset(TRAINING_DATASET_DICT["small"])
+    start_indices = [
+        random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(20)
+    ]
+
     for start_idx in start_indices:
         # Collate to ge the right tensor dims
         batch = collate_fn([dataset[start_idx]])
-        actions = [dataset[i]['input_ids'][-1].item() for i in range(start_idx+BUFFER_SIZE, start_idx + BUFFER_SIZE + EPISODE_LENGTH)]
-        
+        actions = [
+            dataset[i]["input_ids"][-1].item()
+            for i in range(
+                start_idx + BUFFER_SIZE, start_idx + BUFFER_SIZE + EPISODE_LENGTH
+            )
+        ]
+
         unet, vae, action_embedding, noise_scheduler, _, _ = load_model(
             model_folder, device=device
         )
-        logger.info(f"Generating rollout for scenario")
 
         vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
         image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)

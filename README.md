@@ -74,7 +74,7 @@ python train_text_to_image.py \
 ### Train the auto-encoder
 
 ```
-python finetune_autoencoder.py
+python finetune_autoencoder.py --hf_model_folder {path to the model folder}
 ```
 
 ### Run inference (generating a single image)
