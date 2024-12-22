@@ -26,7 +26,6 @@ VALIDATION_PROMPT = "video game doom image, high quality, 4k, high resolution"
 
 # Datasets
 TRAINING_DATASET_DICT = {
-    "small": "arnaudstiegler/vizdoom-episode",
-    "large": "arnaudstiegler/vizdoom-episode-large",
-    "bestest": "arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5",
+    "small": "arnaudstiegler/vizdoom-5-episodes-skipframe-4-lvl5",
+    "large": "arnaudstiegler/vizdoom-500-episodes-skipframe-4-lvl5",
 }

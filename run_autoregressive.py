@@ -17,41 +17,17 @@ from run_inference import (
 )
 from model import load_model
 
-# Action 0: TURN_LEFT
-# Action 1: TURN_RIGHT
-# Action 2: MOVE_RIGHT
-# Action 3: MOVE_RIGHT + TURN_LEFT
-# Action 4: MOVE_RIGHT + TURN_RIGHT
-# Action 5: MOVE_LEFT
-# Action 6: MOVE_LEFT + TURN_LEFT
-# Action 7: MOVE_LEFT + TURN_RIGHT
-# Action 8: MOVE_FORWARD
-# Action 9: MOVE_FORWARD + TURN_LEFT
-# Action 10: MOVE_FORWARD + TURN_RIGHT
-# Action 11: MOVE_FORWARD + MOVE_RIGHT
-# Action 12: MOVE_FORWARD + MOVE_RIGHT + TURN_LEFT
-# Action 13: MOVE_FORWARD + MOVE_RIGHT + TURN_RIGHT
-# Action 14: MOVE_FORWARD + MOVE_LEFT
-# Action 15: MOVE_FORWARD + MOVE_LEFT + TURN_LEFT
-# Action 16: MOVE_FORWARD + MOVE_LEFT + TURN_RIGHT
-# Action 17: ATTACK
-
-'''
-Built action space of size 18 from buttons [<Button.ATTACK: 0> <Button.MOVE_FORWARD: 13> <Button.MOVE_LEFT: 11>
- <Button.MOVE_RIGHT: 10> <Button.TURN_RIGHT: 14> <Button.TURN_LEFT: 15>]
-'''
-
+"""Action mapping for the Doom environment:
+Built action space of size 18 from buttons [
+    <Button.ATTACK: 0> 
+    <Button.MOVE_FORWARD: 13> 
+    <Button.MOVE_LEFT: 11>
+    <Button.MOVE_RIGHT: 10>
+    <Button.TURN_RIGHT: 14>
+    <Button.TURN_LEFT: 15>
+    ]
 """
-0: ?
-1: right
-2: move right
-3: unclear
-4: ?
-5: move left
-6: turn left
-7: turn right?
 
-"""
 
 torch.manual_seed(9052924)
 np.random.seed(9052924)
@@ -115,7 +91,7 @@ def generate_rollout(
     return all_images
 
 
-def main(model_folder: str, use_scenario: bool) -> None:
+def main(model_folder: str) -> None:
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -124,23 +100,7 @@ def main(model_folder: str, use_scenario: bool) -> None:
         else "cpu"
     )
 
-    scenarios = {
-        # TODO: add more scenarios
-        # TODO: remember there's a skip frame of 4
-        # 'only_forward': [8]*30,
-        "forward_attack_forward_attack": [1]*4 + [8]*4 + [1]*4 + [8]*4,
-        "move_left_attack_move_left_attack": [5]*4 + [17]*4 + [5]*4 + [17]*4,
-    }
-
-    if use_scenario:
-        raise NotImplementedError("Scenario generation not implemented")
-        scenario_name = "forward_attack_forward_attack"
-        actions = scenarios[scenario_name]
-    else:
-        dataset = EpisodeDataset(TRAINING_DATASET_DICT["bestest"])
-        # This is random
-
-    
+    dataset = EpisodeDataset(TRAINING_DATASET_DICT["small"])    
     start_indices = [random.randint(0, len(dataset) - EPISODE_LENGTH) for _ in range(20)]
     
     for start_idx in start_indices:
@@ -189,7 +149,6 @@ def main(model_folder: str, use_scenario: bool) -> None:
 
 
 if __name__ == "__main__":
-    # TODO: extract all that to a main function
     parser = argparse.ArgumentParser(
         description="Run inference with customizable parameters"
     )
@@ -198,12 +157,6 @@ if __name__ == "__main__":
         type=str,
         help="Path to the folder containing the model weights",
     )
-    parser.add_argument(
-        "--use_scenario",
-        type=bool,
-        help="Use scenario",
-        default=False,
-    )
     args = parser.parse_args()
 
-    main(model_folder=args.model_folder, use_scenario=args.use_scenario)
+    main(model_folder=args.model_folder)
