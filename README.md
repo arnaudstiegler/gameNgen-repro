@@ -1,4 +1,4 @@
-# gameNgen-repro
+# Reproducing the gameNgen paper
 
 This repo contains the code to reproduce the results of the gameNgen paper. The model / inference has not been optimized enough to get to 20 FPS as reported in the paper.
 
